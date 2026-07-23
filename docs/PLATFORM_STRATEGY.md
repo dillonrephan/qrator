@@ -46,12 +46,17 @@ rather than assuming an embedded `tracks` array is complete. Collection
 pagination must enforce a page limit, item limit, deadline, and repeated-cursor
 guard.
 
+SoundCloud's numeric `id` field was deprecated with a June 30, 2025 migration
+deadline. QRator will treat each resource's stable string `urn` as its opaque
+primary platform identifier, including in persisted resolutions and endpoint
+paths. It will not derive or retain the numeric portion as an application key.
+
 SoundCloud publishing is feasible through the official API:
 
-- resolve eligible candidates to stable SoundCloud track IDs;
+- resolve eligible candidates to stable SoundCloud track URNs;
 - preflight the complete private playlist payload;
-- create it with `POST /playlists`;
-- update it with `PUT /playlists/{id}` only through an explicit, recoverable
+- create it with `POST /playlists` using track URNs;
+- update it with `PUT /playlists/{urn}` only through an explicit, recoverable
   publish operation.
 
 Publishing is disabled until user OAuth, token rotation, strict SoundCloud
@@ -62,6 +67,7 @@ References:
 - [SoundCloud API guide](https://developers.soundcloud.com/docs/api/)
 - [SoundCloud application registration](https://developers.soundcloud.com/docs/api/register-app)
 - [SoundCloud rate limits](https://developers.soundcloud.com/docs/api/rate-limits.html)
+- [SoundCloud numeric ID to string URN migration](https://developers.soundcloud.com/blog/urn-num-to-string/)
 
 ## Platform-Neutral Candidates and Target Eligibility
 
@@ -73,7 +79,7 @@ candidate and target:
 | Target | Required eligibility evidence |
 | --- | --- |
 | Spotify | A strictly matched Spotify track URI with confidence above the configured threshold |
-| SoundCloud | A playable SoundCloud track ID with confidence above the configured threshold |
+| SoundCloud | A playable SoundCloud track URN with confidence above the configured threshold |
 | Review/export | Canonical metadata and at least one accepted provenance edge |
 
 Scoring answers “is this recommendation interesting and well supported?”
@@ -186,7 +192,11 @@ References:
 
 ### Stage 2: Resilient API foundation
 
-- centralize per-host rate-limit state;
+- coordinate rate-limit state in one broker shared by concurrent Node and
+  Python processes and discovery runs, keyed by provider and application
+  identity rather than held only in process memory;
+- enforce a bounded, fair wait queue with per-run deadlines and cancellation,
+  removing queued work when its request disconnects, expires, or is cancelled;
 - honor full retry/reset metadata and surface partial results;
 - add capability flags and diagnostics for unavailable integrations;
 - preserve secrets only in ignored, owner-readable files.
