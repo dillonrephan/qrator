@@ -1,0 +1,34 @@
+- name: "trusted_rap_guy"
+  platform: "spotify"
+  type: "spotify_playlist"
+  category: "structured_api"
+  url: "https://open.spotify.com/playlist/..."
+  weight: 1.6
+
+- name: "soundcloud_gremlin"
+  platform: "soundcloud"
+  type: "soundcloud_likes"
+  category: "structured_api"
+  url: "https://soundcloud.com/..."
+  weight: 1.8
+
+- name: "local_notes"
+  platform: "text"
+  type: "text_import"
+  category: "pasted_text"
+  url: "music_harvester/config/tracks.txt"
+  weight: 1.0
+
+- name: "weird_blog_tracklist"
+  platform: "web_page"
+  type: "blog_article"
+  category: "semi_structured_web"
+  url: "https://example.com/..."
+  weight: 1.3
+
+- name: "playlist_export"
+  platform: "csv"
+  type: "csv_import"
+  category: "pasted_text"
+  url: "music_harvester/config/playlist_export.csv"
+  weight: 1.0

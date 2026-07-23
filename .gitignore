@@ -1,0 +1,38 @@
+# Local credentials and OAuth state
+.env
+.env.*
+!.env.example
+.spotify-token.json
+*.pem
+*.key
+
+# Runtime state and generated artifacts
+data/
+output/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# JavaScript dependencies and reports
+node_modules/
+coverage/
+
+# Python environments, caches, and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editor and operating-system files
+.DS_Store
+*.swp
+*~

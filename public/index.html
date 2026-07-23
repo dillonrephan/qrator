@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QRator</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">Q</span>
+        <div><h1>QRator</h1><p>Music discovery workspace</p></div>
+      </div>
+      <div class="connection">
+        <span id="connection-dot" class="connection-dot"></span>
+        <span id="status">Checking Spotify</span>
+        <a id="connect" class="button secondary" href="/login">Connect</a>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Workspace views">
+      <button class="tab active" type="button" data-view="discover">Discover</button>
+      <button class="tab" type="button" data-view="manual">Manual mix</button>
+    </nav>
+
+    <main>
+      <section id="discover-view" class="view active">
+        <aside class="control-rail">
+          <form id="discover-form">
+            <div class="field-head"><label for="discover-query">Seeds and sources</label><span id="seed-count">0 lines</span></div>
+            <textarea id="discover-query" rows="11" maxlength="50000" placeholder="Sister Nancy - Bam Bam&#10;Freddie Gibbs - Andrea&#10;https://soundcloud.com/..."></textarea>
+
+            <div class="field-row">
+              <label for="playlist-length">Length</label>
+              <input id="playlist-length" type="number" min="5" max="60" value="30">
+            </div>
+            <label class="toggle-row">
+              <span><strong>Thorough scan</strong><small>Slower source processing</small></span>
+              <input id="source-thorough" type="checkbox">
+            </label>
+            <button id="discover-button" class="primary wide" type="submit">Create shortlist</button>
+          </form>
+        </aside>
+
+        <section class="results-workspace" aria-live="polite">
+          <div class="results-header">
+            <div><p class="eyebrow">Current run</p><h2 id="result-title">No shortlist yet</h2></div>
+            <div id="result-stats" class="stats"></div>
+          </div>
+          <div id="discover-empty" class="empty-state">
+            <div class="signal" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+            <p>Your next shortlist will appear here.</p>
+          </div>
+          <div id="discover-output" hidden></div>
+        </section>
+      </section>
+
+      <section id="manual-view" class="view">
+        <aside class="control-rail">
+          <form id="playlist-form">
+            <label for="playlist-name">Playlist name</label>
+            <input id="playlist-name" name="name" maxlength="100" placeholder="Friday night drift" required>
+            <label for="playlist-description">Description</label>
+            <textarea id="playlist-description" rows="4" maxlength="300">Created with QRator.</textarea>
+            <label class="toggle-row compact"><span><strong>Public playlist</strong></span><input id="playlist-public" type="checkbox"></label>
+            <button class="primary wide" type="submit">Publish selected tracks</button>
+            <p id="create-result" class="result"></p>
+          </form>
+        </aside>
+        <section class="results-workspace">
+          <form id="search-form" class="search-bar">
+            <label class="sr-only" for="search-query">Search Spotify</label>
+            <input id="search-query" placeholder="Search Spotify tracks">
+            <button class="secondary" type="submit">Search</button>
+          </form>
+          <div class="manual-grid">
+            <section><div class="section-head"><h2>Results</h2></div><div id="results" class="track-list"></div></section>
+            <section><div class="section-head"><h2>Selected</h2><button id="clear" class="text-button" type="button">Clear</button></div><div id="selected" class="track-list muted-empty">No tracks selected.</div></section>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

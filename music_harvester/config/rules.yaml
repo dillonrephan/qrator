@@ -1,0 +1,123 @@
+playlist_length: 40
+max_tracks_per_artist: 3
+min_distance_same_artist: 10
+max_tracks_per_single_source: 5
+max_tracks_per_single_playlist: 3
+recently_played_days_penalty: 14
+unknown_track_target_percent: 30
+wildcard_count: 2
+
+pools:
+  anchors: "Tracks/artists already known to strongly fit the user."
+  adjacent: "Close to known taste, but not obvious repeats."
+  outer_ring: "Farther from anchors but still plausibly connected."
+  wildcards: "Weird, risky, or genre-disconnected but provenance-supported."
+  bridge_tracks: "Connect otherwise distant sounds, scenes, artists, or moods."
+  texture_match: "Match by sound, feeling, production, or vocal attitude."
+  energy_match: "Match the desired intensity or motion."
+  deep_source: "Come from high-trust human sources even when not obvious on paper."
+  confirmed: "Manually approved by the user."
+  rejected: "Manually rejected by the user."
+  almost: "Not bad, but the wrong version of a good idea."
+
+modes:
+  balanced_discovery:
+    purpose: "strong playlist with both trust and surprise"
+    mix:
+      anchors: 0.15
+      adjacent: 0.25
+      outer_ring: 0.20
+      deep_source: 0.20
+      texture_match: 0.10
+      wildcards: 0.10
+
+  high_trust:
+    purpose: "safest playlist using mostly trusted-source overlap"
+    mix:
+      anchors: 0.20
+      adjacent: 0.25
+      deep_source: 0.35
+      bridge_tracks: 0.10
+      wildcards: 0.10
+
+  weird_pull:
+    purpose: "intentionally stranger but still justified"
+    mix:
+      anchors: 0.10
+      adjacent: 0.15
+      outer_ring: 0.25
+      texture_match: 0.15
+      deep_source: 0.15
+      wildcards: 0.20
+
+  bridge_builder:
+    purpose: "connect distant sounds without making a chaotic playlist"
+    mix:
+      anchors: 0.15
+      adjacent: 0.20
+      bridge_tracks: 0.25
+      texture_match: 0.20
+      energy_match: 0.10
+      wildcards: 0.10
+
+  bridge_discovery:
+    purpose: "bootstrap from distant seeds by raiding sources where humans already connect them"
+    mix:
+      anchors: 0.15
+      adjacent: 0.15
+      bridge_tracks: 0.30
+      deep_source: 0.20
+      outer_ring: 0.10
+      wildcards: 0.10
+
+  heavy_motion:
+    purpose: "forward-moving, high-energy playlist"
+    mix:
+      anchors: 0.15
+      adjacent: 0.20
+      energy_match: 0.30
+      texture_match: 0.15
+      deep_source: 0.10
+      wildcards: 0.10
+
+context_words:
+  high:
+    - trusted
+    - favorite
+    - essentials
+    - discoveries
+    - deep cuts
+    - strange
+    - raw
+    - intense
+    - heavy
+    - abrasive
+    - hypnotic
+    - restless
+    - leftfield
+    - rotation
+  medium:
+    - night
+    - driving
+    - work
+    - focused
+    - weird
+    - loud
+    - dark
+    - bright
+    - motion
+    - texture
+  low:
+    - party
+    - throwback
+    - gym
+    - chill
+    - sad
+  reject:
+    - sleep
+    - study
+    - christmas
+    - wedding
+    - kids
+    - clean
+    - radio
