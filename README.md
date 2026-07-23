@@ -4,6 +4,17 @@ An independent QRator variant focused on isolated discovery runs, reviewable res
 
 The original project at `/home/ice/projects/spotify` is not modified or used for runtime state.
 
+## Direction
+
+The next foundation phase is SoundCloud-first discovery using SoundCloud's
+official API, while keeping candidates platform-neutral and treating publishing
+destinations as explicit eligibility targets. Spotify remains a supported
+resolver and publishing target within its current Development Mode limits.
+
+See [Platform Strategy](docs/PLATFORM_STRATEGY.md) for the intended API,
+trust-spider, eligibility, migration, and rollout design. That document is
+forward-looking; the current behavior described below has not yet been changed.
+
 ## Setup
 
 Create a Spotify Developer application with this redirect URI:
