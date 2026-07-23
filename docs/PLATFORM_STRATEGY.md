@@ -55,9 +55,14 @@ SoundCloud publishing is feasible through the official API:
 
 - resolve eligible candidates to stable SoundCloud track URNs;
 - preflight the complete private playlist payload;
-- create it with `POST /playlists` using track URNs;
+- create it with `POST /playlists`;
 - update it with `PUT /playlists/{urn}` only through an explicit, recoverable
   publish operation.
+
+QRator will persist URNs as its identifiers, but it will validate the current
+OpenAPI playlist-track payload contract in a private three-track canary before
+enabling publishing. It will use URNs only where the API accepts them and will
+never silently derive or retain deprecated numeric IDs.
 
 Publishing is disabled until user OAuth, token rotation, strict SoundCloud
 matching, and publish-state recovery are implemented and tested.
@@ -113,6 +118,14 @@ Every provenance edge must be idempotent. SQL aggregation must first reduce to
 one effective edge per candidate and source so raw rows, repeated ingestion, or
 bridge joins cannot multiply source weight.
 
+Automatic expansion is restricted to an HTTPS provider allowlist. Generic URLs
+entered manually remain explicit one-hop inputs. Before every request and
+redirect, QRator must reject embedded credentials, loopback, private,
+link-local, and multicast destinations after DNS resolution; redirect count and
+domain changes are capped. Content type, response bytes, and decompressed size
+are bounded. These controls remain mandatory even when depth and request
+budgets have room remaining.
+
 Source trust is bounded from zero to one and combines:
 
 - a configured prior for the source category;
@@ -159,6 +172,14 @@ QRator will therefore use supported Spotify capabilities for:
 - bounded track search for strict target resolution;
 - explicit playlist creation and item insertion.
 
+Spotify search remains available with a maximum page size of 10 and remains
+useful for strict track resolution. Owned/collaborative ingestion requires
+`playlist-read-private` and `playlist-read-collaborative`. `/me/playlists` may
+also enumerate followed playlists, so enumeration alone is not proof that
+contents are readable: QRator must verify ownership/collaboration metadata and
+treat 403 as an expected capability denial, never as a trigger for HTML
+scraping.
+
 Arbitrary public Spotify playlist traversal is not a dependable Development
 Mode discovery primitive. The supported user-mediated workarounds are:
 
@@ -171,6 +192,13 @@ but QRator must not scrape its HTML for playlist contents. Broader behavior may
 be enabled only behind a documented capability flag for an application that
 has the necessary extended access.
 
+The runtime capability matrix must distinguish new Development Mode, existing
+Development Mode, and Extended Quota applications and probe behavior
+gracefully. Spotify postponed some endpoint-access changes for existing
+Development Mode integrations in March 2026, while new client IDs use the
+reduced model and Extended Quota is unaffected; QRator must not infer
+capabilities from a date alone.
+
 Spotify rate-limit responses must honor the complete `Retry-After` value. A
 run-wide request budget and deadline take precedence over retrying indefinitely.
 
@@ -179,6 +207,34 @@ References:
 - [Spotify February 2026 migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
 - [Spotify developer-access update](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security)
 - [Spotify Web API rate limits](https://developer.spotify.com/documentation/web-api/concepts/rate-limits)
+
+## Storage, Authorization, and Privacy
+
+The platform-neutral rewrite needs versioned transactional SQLite migrations,
+not ad-hoc `ALTER TABLE` checks. A `schema_version` ledger, foreign-key
+enforcement, provider-identifier uniqueness, and an idempotent provenance key
+will support backfills from the current `spotify_uri` and `soundcloud_url`
+columns. Migration fixtures must cover artist/title collisions, remix/live/edit
+variants, repeated runs, rollback on failure, and persistent CLI databases.
+Compatibility reads remain until a migrated database passes validation.
+
+Publishing requires more than resolver confidence. Each item must have explicit
+user selection, immutable membership in the reviewed discovery run, target
+capability, unambiguous resolution evidence with algorithm version and
+verification time, and a durable publish-item state. Ambiguous or stale
+resolutions fail closed.
+
+OAuth refresh is single-flight across processes. The token store serializes
+refresh per application/user, atomically compares token generations, writes
+owner-readable state before releasing the lock, and recovers interrupted
+refreshes. This is essential for SoundCloud's rotating refresh tokens and also
+prevents redundant Spotify refreshes.
+
+The shared broker keeps durable rolling-window permit and cooldown state,
+separates token-exchange quotas from API request quotas, uses a monotonic clock
+for waits, cleans abandoned permits, and bounds ledger retention. Provider
+payloads are redacted, size-limited, and subject to a short TTL; tokens and URLs
+containing credentials are never retained as diagnostics.
 
 ## Staged Implementation
 
