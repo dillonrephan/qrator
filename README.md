@@ -15,7 +15,9 @@ the discovery engine.
 SoundCloud-first discovery and publishing remain the next provider integration,
 using only SoundCloud's official OAuth API. See
 [Platform Strategy](docs/PLATFORM_STRATEGY.md) and
-[Implementation Status](docs/IMPLEMENTATION_STATUS.md).
+[Implementation Status](docs/IMPLEMENTATION_STATUS.md). QRator's default
+ephemeral behavior and explicit archive boundary are documented in
+[Memory Model](docs/MEMORY_MODEL.md).
 
 ## Setup
 
@@ -57,6 +59,11 @@ python -m compileall -q music_harvester
 
 - The HTTP server listens only on loopback.
 - Each discovery request runs in its own temporary directory and SQLite database.
+- QRator ships with no personal taste anchors and does not learn a durable taste
+  profile by default.
+- The GUI's **Save this track's metadata forever** action is an explicit local
+  archive operation. Saved metadata is never used for ranking and can be
+  inspected, exported, or individually removed.
 - Keyless artist discovery uses bounded ListenBrainz radio and bulk MusicBrainz metadata.
 - Unsupported Spotify HTML scraping and SoundCloud web-client credential extraction are disabled.
 - Final Spotify resolution is strict, persistently cached, and capped at twelve new queries by default.
@@ -75,6 +82,7 @@ python -m compileall -q music_harvester
 - Request bodies are limited to 256 KiB.
 - OAuth state values expire after ten minutes.
 - `.env`, Spotify tokens, databases, and generated output are ignored by Git.
+- The owner-only metadata archive at `data/saved-tracks.json` is also ignored by Git.
 
 ## CLI
 
@@ -90,6 +98,6 @@ For a useful no-key discovery run today:
 
 ```bash
 python -m music_harvester.main discover-from-seeds \
-  --artists Portishead Igorrr "Danny Brown" "Aphex Twin" \
+  --artists Björk "MF DOOM" "Boards of Canada" "Fela Kuti" \
   --length 20
 ```

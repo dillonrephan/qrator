@@ -2,14 +2,18 @@ const $ = (selector) => document.querySelector(selector);
 const selected = new Map();
 let currentRun = null;
 let latestSeeds = [];
+let savedTracks = [];
+let savedArchiveIds = new Set();
 
 await refreshStatus();
+await refreshLibrary();
 renderSelected();
 updateSeedCount();
 
 document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
   document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === `${tab.dataset.view}-view`));
+  if (tab.dataset.view === 'library') refreshLibrary();
 }));
 
 $('#discover-query').addEventListener('input', (event) => {
@@ -62,6 +66,7 @@ $('#playlist-form').addEventListener('submit', async (event) => {
 });
 
 $('#clear').addEventListener('click', () => { selected.clear(); renderSelected(); });
+$('#export-library').addEventListener('click', exportLibrary);
 
 async function refreshStatus() {
   const status = await api('/api/status');
@@ -155,6 +160,13 @@ function renderCandidate(item, index) {
   artist.textContent = [item.artist, item.album].filter(Boolean).join(' — ');
   const why = document.createElement('small');
   why.textContent = item.why;
+  const evidence = document.createElement('div');
+  evidence.className = 'candidate-evidence';
+  evidence.append(
+    metric(`${item.shelf_confidence.toFixed(1)}`, 'shelf confidence'),
+    metric(item.discovery_distance, 'distance'),
+    metric(`${item.recording_confidence.toFixed(1)}`, 'recording confidence'),
+  );
   const links = document.createElement('div');
   links.className = 'candidate-links';
   if (item.spotify_uri) links.append(externalLink(`https://open.spotify.com/track/${item.spotify_uri.split(':').at(-1)}`, 'Spotify'));
@@ -163,9 +175,113 @@ function renderCandidate(item, index) {
   const query = encodeURIComponent(`${item.artist} ${item.title}`);
   links.append(externalLink(`https://www.youtube.com/results?search_query=${query}`, 'YouTube search'));
   links.append(externalLink(`https://soundcloud.com/search/sounds?q=${query}`, 'SoundCloud search'));
-  body.append(title, artist, why, links);
+  const save = button(
+    savedArchiveIds.has(item.archive_id) ? 'Metadata saved' : 'Save this track’s metadata forever',
+    'archive-button',
+    (event) => archiveTrack(item, event.currentTarget),
+  );
+  save.disabled = savedArchiveIds.has(item.archive_id);
+  links.append(save);
+  body.append(title, artist, evidence, why, links);
   row.append(number, body);
   return row;
+}
+
+function metric(value, label) {
+  const element = document.createElement('span');
+  const strong = document.createElement('strong');
+  strong.textContent = value;
+  const small = document.createElement('small');
+  small.textContent = label;
+  element.append(strong, small);
+  return element;
+}
+
+async function archiveTrack(item, archiveButton) {
+  setBusy(archiveButton, true, 'Saving metadata');
+  try {
+    const data = await api('/api/library', {
+      method: 'POST',
+      body: JSON.stringify({ runId: currentRun, archiveId: item.archive_id }),
+    });
+    savedArchiveIds.add(data.track.archive_id);
+    archiveButton.dataset.label = 'Metadata saved';
+  } catch (error) {
+    archiveButton.dataset.label = 'Try saving again';
+    window.alert(error.message);
+  } finally {
+    setBusy(archiveButton, false);
+    archiveButton.disabled = savedArchiveIds.has(item.archive_id);
+  }
+}
+
+async function refreshLibrary() {
+  try {
+    const data = await api('/api/library');
+    savedTracks = data.tracks || [];
+    savedArchiveIds = new Set(savedTracks.map((track) => track.archive_id));
+    renderLibrary();
+  } catch (error) {
+    showText($('#library-output'), error.message, 'error error-panel');
+  }
+}
+
+function renderLibrary() {
+  const output = $('#library-output');
+  output.innerHTML = '';
+  $('#library-title').textContent = savedTracks.length ? 'Metadata kept on purpose' : 'Nothing saved';
+  $('#library-stats').innerHTML = `<span>${savedTracks.length} saved</span><span>not used for ranking</span>`;
+  if (!savedTracks.length) {
+    return showText(output, 'Save a candidate explicitly and its metadata will appear here.', 'muted-empty');
+  }
+  for (const [index, track] of savedTracks.entries()) {
+    const row = renderSavedTrack(track, index + 1);
+    output.append(row);
+  }
+}
+
+function renderSavedTrack(track, index) {
+  const row = document.createElement('article');
+  row.className = 'candidate';
+  const number = document.createElement('span');
+  number.className = 'candidate-number';
+  number.textContent = String(index).padStart(2, '0');
+  const body = document.createElement('div');
+  body.className = 'candidate-body';
+  const title = document.createElement('strong');
+  title.textContent = track.title;
+  const artist = document.createElement('span');
+  artist.textContent = [track.artist, track.album].filter(Boolean).join(' — ');
+  const saved = document.createElement('small');
+  saved.textContent = `Saved ${new Date(track.saved_at).toLocaleString()} · never used for ranking`;
+  const actions = document.createElement('div');
+  actions.className = 'candidate-links';
+  if (track.spotify_uri) actions.append(externalLink(`https://open.spotify.com/track/${track.spotify_uri.split(':').at(-1)}`, 'Spotify'));
+  if (track.soundcloud_url) actions.append(externalLink(track.soundcloud_url, 'SoundCloud'));
+  if (track.musicbrainz_id) actions.append(externalLink(`https://musicbrainz.org/recording/${track.musicbrainz_id}`, 'MusicBrainz'));
+  actions.append(button('Remove saved metadata', 'remove-button', () => removeArchivedTrack(track)));
+  body.append(title, artist, saved, actions);
+  row.append(number, body);
+  return row;
+}
+
+async function removeArchivedTrack(track) {
+  if (!window.confirm(`Remove the saved metadata for “${track.artist} — ${track.title}”?`)) return;
+  await api(`/api/library/${encodeURIComponent(track.archive_id)}`, { method: 'DELETE' });
+  await refreshLibrary();
+}
+
+function exportLibrary() {
+  const payload = JSON.stringify({
+    schema_version: 1,
+    purpose: 'Explicitly saved track metadata. Never used for ranking.',
+    tracks: savedTracks,
+  }, null, 2);
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([`${payload}\n`], { type: 'application/json' }));
+  link.download = `qrator-saved-metadata-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function externalLink(href, label) {

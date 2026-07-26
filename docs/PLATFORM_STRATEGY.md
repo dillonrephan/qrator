@@ -11,6 +11,11 @@ Generic platform-resolution storage has begun, but the compatibility migration
 and official SoundCloud OAuth/URN adapter are not complete. See
 [Implementation Status](IMPLEMENTATION_STATUS.md).
 
+QRator does not maintain a taste profile by default. Discovery ranks evidence
+paths through shelves rather than predicting preference. Durable metadata crosses
+the session boundary only through an explicit per-track archive action and is
+never fed back into ranking. See [Memory Model](MEMORY_MODEL.md).
+
 ## Objective
 
 QRator will use SoundCloud as its primary discovery surface, Last.fm as a

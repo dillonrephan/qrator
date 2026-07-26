@@ -16,6 +16,11 @@ Last updated: 2026-07-26
 - Generic `platform_resolutions` storage alongside compatibility columns.
 - Spotify publishing preflight: QRator resolves first and will not create an empty
   playlist.
+- Ephemeral discovery with no tracked or inferred personal taste profile.
+- Separate shelf confidence, discovery distance, and recording confidence instead
+  of a monolithic taste-like score.
+- Explicit owner-only metadata archive with GUI inspection, JSON export, and
+  per-track removal. Archive contents never feed ranking.
 
 ## Intentionally disabled
 
@@ -30,9 +35,10 @@ Last updated: 2026-07-26
    pagination, and capability diagnostics.
 3. Add SoundCloud user OAuth, strict resolution, and a private three-track publish
    canary.
-4. Add a review action that promotes/rejects individual candidates before target
-   resolution.
-5. Expand deterministic scoring, traversal, and provider-failure fixtures.
+4. Add session-only “keep,” “skip,” and “raid this shelf deeper” controls.
+5. Add an opt-in persistent judgment store only after its inspect/export/erase
+   controls and non-ranking boundaries are specified.
+6. Expand deterministic scoring, traversal, and provider-failure fixtures.
 
 ## Active budgets
 

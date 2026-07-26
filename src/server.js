@@ -13,8 +13,10 @@ const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const tokenPath = path.join(root, '.spotify-token.json');
 const stateDir = path.join(root, 'data');
+const savedTracksPath = path.join(stateDir, 'saved-tracks.json');
 const runFile = promisify(execFile);
 const MAX_BODY_BYTES = 256 * 1024;
+const MAX_SAVED_TRACKS = 5_000;
 const RUN_TTL_MS = 60 * 60 * 1000;
 const STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -37,6 +39,7 @@ const scopes = [
 
 const pendingStates = new Map();
 const discoveryRuns = new Map();
+let libraryWrite = Promise.resolve();
 
 export const server = http.createServer(handleRequest);
 
@@ -69,6 +72,17 @@ async function handleRequest(req, res) {
       });
     }
     if (req.method === 'GET' && url.pathname === '/api/me') return spotifyProxy(res, 'https://api.spotify.com/v1/me');
+    if (req.method === 'GET' && url.pathname === '/api/library') {
+      return json(res, 200, {
+        tracks: await readSavedTracks(),
+        usedForRanking: false,
+        storage: 'local explicit archive',
+      });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/library') return archiveCandidate(req, res);
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/library/')) {
+      return removeArchivedCandidate(url, res);
+    }
     if (req.method === 'GET' && url.pathname === '/api/search') {
       const query = url.searchParams.get('q')?.trim();
       if (!query) return json(res, 400, { error: 'Missing search query.' });
@@ -225,6 +239,45 @@ async function createDiscoveryPlaylist(req, res) {
   return json(res, 201, { playlist, added: uris.length, unresolved: run.items.length - uris.length });
 }
 
+async function archiveCandidate(req, res) {
+  const body = await readJson(req);
+  pruneRuns();
+  const run = discoveryRuns.get(String(body.runId || ''));
+  if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before archiving metadata.' });
+  const archiveId = cleanText(body.archiveId, 200);
+  const candidate = run.items.find((item) => candidateArchiveId(item) === archiveId);
+  if (!candidate) return json(res, 404, { error: 'That candidate does not belong to this discovery run.' });
+
+  const result = await queueLibraryWrite(async () => {
+    const tracks = await readSavedTracks();
+    const existing = tracks.find((item) => item.archive_id === archiveId);
+    if (existing) return { track: existing, created: false };
+    if (tracks.length >= MAX_SAVED_TRACKS) {
+      const error = new Error(`The explicit metadata archive is limited to ${MAX_SAVED_TRACKS} tracks.`);
+      error.status = 409;
+      throw error;
+    }
+    const track = metadataSnapshot(candidate);
+    tracks.unshift(track);
+    await writeSavedTracks(savedTracksPath, tracks);
+    return { track, created: true };
+  });
+  return json(res, result.created ? 201 : 200, { ...result, usedForRanking: false });
+}
+
+async function removeArchivedCandidate(url, res) {
+  const archiveId = decodeURIComponent(url.pathname.slice('/api/library/'.length));
+  if (!archiveId || archiveId.length > 200) return json(res, 400, { error: 'Invalid archive identifier.' });
+  const removed = await queueLibraryWrite(async () => {
+    const tracks = await readSavedTracks();
+    const remaining = tracks.filter((item) => item.archive_id !== archiveId);
+    if (remaining.length === tracks.length) return false;
+    await writeSavedTracks(savedTracksPath, remaining);
+    return true;
+  });
+  return removed ? json(res, 200, { removed: archiveId }) : json(res, 404, { error: 'Saved metadata not found.' });
+}
+
 async function writePlaylist({ name, description, isPublic, uris }) {
   const playlist = await spotifyFetch('https://api.spotify.com/v1/me/playlists', {
     method: 'POST', body: JSON.stringify({ name, description, public: isPublic }),
@@ -302,16 +355,74 @@ function playlistSeeds(items) {
 }
 function publicCandidate(item) {
   return {
+    archive_id: candidateArchiveId(item),
     artist: cleanText(item.artist, 300),
     title: cleanText(item.title, 500),
     album: cleanText(item.album, 500),
     spotify_uri: /^spotify:track:[A-Za-z0-9]+$/.test(String(item.spotify_uri || '')) ? item.spotify_uri : null,
     soundcloud_url: safeExternalUrl(item.soundcloud_url, 'soundcloud.com'),
     musicbrainz_id: /^[0-9a-f-]{36}$/i.test(String(item.musicbrainz_id || '')) ? item.musicbrainz_id : null,
-    score: Number(item.score) || 0,
+    shelf_confidence: boundedNumber(item.shelf_confidence),
+    recording_confidence: boundedNumber(item.recording_confidence),
+    discovery_distance: cleanText(item.discovery_distance || 'one shelf away', 80),
     sources: Array.isArray(item.sources) ? item.sources.map((source) => cleanText(source, 200)).slice(0, 12) : [],
     why: cleanText(item.why, 1000),
   };
+}
+function boundedNumber(value) { return Math.max(0, Math.min(100, Number(value) || 0)); }
+export function candidateArchiveId(item) {
+  if (/^[0-9a-f-]{36}$/i.test(String(item.musicbrainz_id || ''))) return `musicbrainz:${item.musicbrainz_id.toLowerCase()}`;
+  if (/^spotify:track:[A-Za-z0-9]+$/.test(String(item.spotify_uri || ''))) return String(item.spotify_uri);
+  if (safeExternalUrl(item.soundcloud_url, 'soundcloud.com')) {
+    return `soundcloud:${crypto.createHash('sha256').update(item.soundcloud_url).digest('hex').slice(0, 32)}`;
+  }
+  const identity = `${cleanText(item.artist, 300).toLowerCase()}\n${cleanText(item.title, 500).toLowerCase()}`;
+  return `metadata:${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32)}`;
+}
+export function metadataSnapshot(item, savedAt = new Date().toISOString()) {
+  const candidate = publicCandidate(item);
+  if (!candidate.artist || !candidate.title) throw new Error('Candidate metadata is incomplete.');
+  return {
+    schema_version: 1,
+    archive_id: candidate.archive_id,
+    saved_at: savedAt,
+    artist: candidate.artist,
+    title: candidate.title,
+    album: candidate.album || null,
+    spotify_uri: candidate.spotify_uri,
+    soundcloud_url: candidate.soundcloud_url,
+    musicbrainz_id: candidate.musicbrainz_id,
+    sources: candidate.sources,
+    note: 'Explicit metadata archive; not used for ranking.',
+  };
+}
+export async function readSavedTracks(filePath = savedTracksPath) {
+  try {
+    const payload = JSON.parse(await readFile(filePath, 'utf8'));
+    if (payload?.schema_version !== 1 || !Array.isArray(payload.tracks)) {
+      throw new Error('Saved metadata archive has an unsupported format.');
+    }
+    return payload.tracks;
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+export async function writeSavedTracks(filePath, tracks) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  await writeFile(temporary, `${JSON.stringify({
+    schema_version: 1,
+    purpose: 'Explicitly saved track metadata. Never used for ranking.',
+    tracks,
+  }, null, 2)}\n`, { mode: 0o600 });
+  await chmod(temporary, 0o600);
+  await rename(temporary, filePath);
+}
+function queueLibraryWrite(action) {
+  const next = libraryWrite.then(action, action);
+  libraryWrite = next.catch(() => {});
+  return next;
 }
 function safeExternalUrl(value, hostname) {
   try {

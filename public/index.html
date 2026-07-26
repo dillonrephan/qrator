@@ -22,6 +22,7 @@
     <nav class="tabs" aria-label="Workspace views">
       <button class="tab active" type="button" data-view="discover">Discover</button>
       <button class="tab" type="button" data-view="manual">Manual mix</button>
+      <button class="tab" type="button" data-view="library">Saved metadata</button>
     </nav>
 
     <main>
@@ -29,10 +30,7 @@
         <aside class="control-rail">
           <form id="discover-form">
             <div class="field-head"><label for="discover-query">Seeds and sources</label><span id="seed-count">0 lines</span></div>
-            <textarea id="discover-query" rows="11" maxlength="50000" placeholder="Artists, tracks, exports, or source URLs">Portishead
-Igorrr
-Danny Brown
-Aphex Twin</textarea>
+            <textarea id="discover-query" rows="11" maxlength="50000" placeholder="Try four artists, two tracks, an exported tracklist, or a source URL."></textarea>
 
             <div class="field-row">
               <label for="playlist-length">Length</label>
@@ -81,6 +79,23 @@ Aphex Twin</textarea>
             <section><div class="section-head"><h2>Results</h2></div><div id="results" class="track-list"></div></section>
             <section><div class="section-head"><h2>Selected</h2><button id="clear" class="text-button" type="button">Clear</button></div><div id="selected" class="track-list muted-empty">No tracks selected.</div></section>
           </div>
+        </section>
+      </section>
+
+      <section id="library-view" class="view">
+        <aside class="control-rail library-note">
+          <p class="eyebrow">Explicit local memory</p>
+          <h2>Saved metadata</h2>
+          <p>Only tracks whose <strong>Save this track’s metadata forever</strong> button you pressed appear here.</p>
+          <p>This archive is stored locally until you remove it or delete the local data. It is never used to rank recommendations.</p>
+          <button id="export-library" class="secondary wide" type="button">Export JSON</button>
+        </aside>
+        <section class="results-workspace">
+          <div class="results-header">
+            <div><p class="eyebrow">Local archive</p><h2 id="library-title">Nothing saved</h2></div>
+            <div id="library-stats" class="stats"></div>
+          </div>
+          <div id="library-output" class="candidate-list"></div>
         </section>
       </section>
     </main>

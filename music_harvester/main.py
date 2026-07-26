@@ -92,12 +92,6 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("track")
     explain.set_defaults(func=cmd_explain)
 
-    feedback = sub.add_parser("feedback")
-    feedback.add_argument("track")
-    feedback.add_argument("--rating", required=True, choices=["keep", "never_again", "almost_wrong", "more_like_this", "too_much_right_now", "holy_shit"])
-    feedback.add_argument("--note")
-    feedback.set_defaults(func=cmd_feedback)
-
     write = sub.add_parser("write-spotify")
     write.add_argument("--playlist-name", required=True)
     write.add_argument("--public", action="store_true")
@@ -317,19 +311,6 @@ def cmd_explain(args: argparse.Namespace, store: Store) -> int:
     return 0
 
 
-def cmd_feedback(args: argparse.Namespace, store: Store) -> int:
-    parsed = split_artist_track(args.track)
-    if not parsed:
-        print('Use "Artist - Track" format.')
-        return 1
-    artist, title = parsed
-    if not store.add_feedback(artist, title, args.rating, args.note):
-        print("No matching track found in the local database.")
-        return 1
-    print(f"saved feedback: {artist} - {title} = {args.rating}")
-    return 0
-
-
 def cmd_write_spotify(args: argparse.Namespace, store: Store) -> int:
     if not FINAL_JSON.exists():
         print("No generated playlist found. Run generate first.")
@@ -359,12 +340,7 @@ def cmd_run(args: argparse.Namespace, store: Store) -> int:
 def generate_playlist(store: Store, config_dir: Path, mode: str, length: int | None) -> tuple[list[Candidate], list[Candidate], list[Candidate]]:
     candidates, rejected = build_candidates(store, config_dir, None)
     rules = load_yaml(config_dir / "rules.yaml")
-    selection_pool = candidates
-    if mode == "bridge_discovery":
-        taste_profile = load_yaml(config_dir / "taste_profile.yaml")
-        known_artists = {item.casefold() for item in taste_profile.get("anchors", {}).get("artists", [])}
-        selection_pool = [item for item in candidates if item.artist.casefold() not in known_artists]
-    selected = sequence_playlist(selection_pool, rules, length, mode)
+    selected = sequence_playlist(candidates, rules, length, mode)
     mode_config = rules.get("modes", {}).get(mode, {})
     purpose = mode_config.get("purpose", "a balanced playlist")
     for candidate in selected:
@@ -373,17 +349,10 @@ def generate_playlist(store: Store, config_dir: Path, mode: str, length: int | N
 
 
 def build_candidates(store: Store, config_dir: Path, limit: int | None) -> tuple[list[Candidate], list[Candidate]]:
-    rules = load_yaml(config_dir / "rules.yaml")
-    taste_profile = load_yaml(config_dir / "taste_profile.yaml")
+    review_policy = load_yaml(config_dir / "review_policy.yaml")
     candidates = dedupe_candidates(store.candidates())
-    kept, rejected = apply_vetoes(candidates, taste_profile)
-    scored = score_candidates(
-        kept,
-        rules=rules,
-        taste_profile=taste_profile,
-        feedback=store.feedback_map(),
-        recently_played=store.recently_played_ids(int(rules.get("recently_played_days_penalty", 14))),
-    )
+    kept, rejected = apply_vetoes(candidates, review_policy)
+    scored = score_candidates(kept)
     if limit:
         scored = scored[:limit]
     return scored, rejected
@@ -538,6 +507,9 @@ def candidate_to_json(item: Candidate) -> dict:
         "soundcloud_url": item.soundcloud_url,
         "musicbrainz_id": item.musicbrainz_id,
         "score": item.score,
+        "shelf_confidence": item.shelf_confidence,
+        "recording_confidence": item.recording_confidence,
+        "discovery_distance": item.discovery_distance,
         "sources": item.sources,
         "platforms": item.platforms,
         "playlist_titles": item.playlist_titles,

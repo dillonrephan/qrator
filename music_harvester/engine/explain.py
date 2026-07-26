@@ -7,18 +7,19 @@ from music_harvester.models import Candidate
 
 def markdown_table(candidates: list[Candidate]) -> str:
     lines = [
-        "| # | Artist | Track | Listen / catalog | Score | Pool(s) | Source(s) | Why |",
-        "| - | ------ | ----- | ---------------- | ----- | ------- | --------- | --- |",
+        "| # | Artist | Track | Listen / catalog | Shelf confidence | Distance | Recording confidence | Source(s) | Why |",
+        "| - | ------ | ----- | ---------------- | ---------------- | -------- | -------------------- | --------- | --- |",
     ]
     for index, item in enumerate(candidates, 1):
         lines.append(
-            "| {idx} | {artist} | {title} | {links} | {score:.2f} | {pools} | {sources} | {why} |".format(
+            "| {idx} | {artist} | {title} | {links} | {shelf:.1f} | {distance} | {recording:.1f} | {sources} | {why} |".format(
                 idx=index,
                 artist=escape_md(item.artist),
                 title=escape_md(item.title),
                 links=platform_links(item),
-                score=item.score,
-                pools=escape_md(", ".join(item.pools)),
+                shelf=item.shelf_confidence,
+                distance=escape_md(item.discovery_distance),
+                recording=item.recording_confidence,
                 sources=escape_md(", ".join(item.sources)),
                 why=escape_md(item.why),
             )

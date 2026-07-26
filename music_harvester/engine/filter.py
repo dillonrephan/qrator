@@ -3,8 +3,8 @@ from __future__ import annotations
 from music_harvester.models import Candidate
 
 
-def apply_vetoes(candidates: list[Candidate], taste_profile: dict) -> tuple[list[Candidate], list[Candidate]]:
-    veto = taste_profile.get("veto", {})
+def apply_vetoes(candidates: list[Candidate], review_policy: dict) -> tuple[list[Candidate], list[Candidate]]:
+    veto = review_policy.get("veto", {})
     artists = {item.lower() for item in veto.get("artists", [])}
     title_words = [item.lower() for item in veto.get("title_words", [])]
 

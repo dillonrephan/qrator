@@ -1,0 +1,18 @@
+# Neutral recording-quality vetoes applied only within the current run.
+veto:
+  artists: []
+  title_words:
+    - slowed
+    - sped up
+    - nightcore
+    - 8d audio
+    - karaoke
+    - clean version
+    - instrumental
+    - skit
+    - interlude
+    - live
+    - radio edit
+    - acoustique
+    - acoustic version
+    - "(drums)"
