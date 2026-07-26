@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import html
 import json
 import os
 import random
@@ -10,7 +9,6 @@ import re
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 from music_harvester.http import ApiError, request_json
 from music_harvester.models import RawTrack, SourceConfig
@@ -18,12 +16,10 @@ from music_harvester.sources.base import SourceAdapter, SourceUnavailable
 
 
 PLAYLIST_RE = re.compile(r"playlist/([A-Za-z0-9]+)")
-PLAYLIST_TRACK_META_RE = re.compile(r'<meta\s+name="music:song"\s+content="https://open\.spotify\.com/track/([A-Za-z0-9]+)"')
 SPOTIFY_FAST_SAMPLE_SIZE = 8
 SPOTIFY_THOROUGH_SAMPLE_SIZE = 30
 SPOTIFY_FAST_FULL_API_READ_LIMIT = 250
 SPOTIFY_THOROUGH_FULL_API_READ_LIMIT = 500
-TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 USER_RE = re.compile(r"user/([^/?]+)")
 
 
@@ -119,7 +115,10 @@ class SpotifySource(SourceAdapter):
             playlist_title = playlist.get("name") or self.source.name
         except ApiError as exc:
             if exc.status in {403, 404, 429}:
-                return self._playlist_tracks_from_public_page(playlist_id, self.source.name)
+                raise SourceUnavailable(
+                    "Spotify playlist items are unavailable to this application; "
+                    "copy the tracks to an owned/collaborative playlist or paste an export."
+                ) from exc
             raise
         tracks: list[RawTrack] = []
         url = f"/playlists/{playlist_id}/items"
@@ -129,7 +128,10 @@ class SpotifySource(SourceAdapter):
             first_page = self.client.get(url, params={"limit": 1})
         except ApiError as exc:
             if exc.status in {403, 404, 429}:
-                return self._playlist_tracks_from_public_page(playlist_id, playlist_title)
+                raise SourceUnavailable(
+                    "Spotify playlist items are unavailable to this application; "
+                    "copy the tracks to an owned/collaborative playlist or paste an export."
+                ) from exc
             raise
         total = int(first_page.get("total") or 0)
         budget = spotify_source_budget()
@@ -143,7 +145,7 @@ class SpotifySource(SourceAdapter):
                 if exc.status == 429 and tracks:
                     return tracks
                 if exc.status in {403, 404, 429}:
-                    return self._playlist_tracks_from_public_page(playlist_id, playlist_title)
+                    return tracks
                 raise
             params = None
             for item in page.get("items", []):
@@ -170,35 +172,10 @@ class SpotifySource(SourceAdapter):
                 if exc.status == 429 and tracks:
                     return tracks
                 if exc.status in {403, 404}:
-                    return self._playlist_tracks_from_public_page(playlist_id, playlist_title)
+                    return tracks
                 raise
             item = (page.get("items") or [{}])[0]
             raw = self._raw_track(item.get("track") or {}, playlist_title, position + 1, "playlist_sample")
-            if raw:
-                tracks.append(raw)
-        return tracks
-
-    def _playlist_tracks_from_public_page(self, playlist_id: str, playlist_title: str) -> list[RawTrack]:
-        html = fetch_spotify_playlist_page(playlist_id)
-        playlist_title = playlist_title_from_html(html) or playlist_title
-        track_ids = list(dict.fromkeys(PLAYLIST_TRACK_META_RE.findall(html)))
-        budget = spotify_source_budget()
-        track_ids = sampled_track_ids(track_ids, budget["sample_size"], playlist_id)
-        tracks: list[RawTrack] = []
-        position = 0
-        for track_id in track_ids:
-            try:
-                track = self.client.get(
-                    f"/tracks/{track_id}",
-                    polite_delay=budget["polite_delay"],
-                    retries=budget["retries"],
-                )
-            except ApiError as exc:
-                if exc.status == 429 and tracks:
-                    return tracks
-                raise
-            position += 1
-            raw = self._raw_track(track, playlist_title, position, "playlist_public_page")
             if raw:
                 tracks.append(raw)
         return tracks
@@ -225,7 +202,7 @@ class SpotifySource(SourceAdapter):
 
     def _user_playlists(self, user_id: str) -> list[RawTrack]:
         tracks: list[RawTrack] = []
-        url = f"/users/{user_id}/playlists"
+        url = "/me/playlists"
         params = {"limit": 50}
         while url:
             page = self.client.get(url, params=params)
@@ -246,30 +223,6 @@ def extract_playlist_id(value: str) -> str | None:
     if value and "/" not in value and "spotify" not in value:
         return value
     return None
-
-
-def fetch_spotify_playlist_page(playlist_id: str) -> str:
-    request = Request(
-        f"https://open.spotify.com/playlist/{playlist_id}",
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
-    with urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8", errors="replace")
-
-
-def playlist_title_from_html(body: str) -> str | None:
-    match = TITLE_RE.search(body)
-    if not match:
-        return None
-    title = html.unescape(match.group(1)).strip()
-    return title.removesuffix(" | Spotify").strip() or None
-
-
-def sampled_track_ids(track_ids: list[str], sample_size: int, key: str) -> list[str]:
-    if len(track_ids) <= sample_size:
-        return track_ids
-
-    return [track_ids[index] for index in sampled_positions(len(track_ids), sample_size, key)]
 
 
 def sampled_positions(total: int, sample_size: int, key: str) -> list[int]:

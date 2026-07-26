@@ -68,6 +68,16 @@ h2 { font-size: 20px; }
 details { border-top: 1px solid var(--line); }
 details:last-child { border-bottom: 1px solid var(--line); }
 summary { cursor: pointer; padding: 15px 4px; font-weight: 750; }
+.candidate-list { display: grid; margin-bottom: 18px; }
+.candidate { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 13px 4px; border-top: 1px solid var(--line); }
+.candidate:first-child { border-top: 0; }
+.candidate-number { padding-top: 2px; color: var(--muted); font: 12px/1.5 ui-monospace, monospace; }
+.candidate-body { min-width: 0; display: grid; gap: 3px; }
+.candidate-body > span, .candidate-body small { color: var(--muted); }
+.candidate-body small { margin-top: 4px; }
+.candidate-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
+.candidate-links a { color: var(--green); font-size: 12px; font-weight: 700; text-decoration: none; }
+.candidate-links a:hover { text-decoration: underline; }
 pre { max-height: 430px; margin: 0 0 18px; overflow: auto; white-space: pre-wrap; color: #cbd2cd; font: 12px/1.55 ui-monospace, monospace; }
 .progress { height: 2px; margin-top: 20px; overflow: hidden; background: var(--line); }
 .progress i { display: block; width: 35%; height: 100%; background: var(--green); animation: scan 1.1s ease-in-out infinite alternate; }

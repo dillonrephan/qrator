@@ -11,9 +11,7 @@ from music_harvester.engine.normalize import normalize_key, split_artist_track
 from music_harvester.http import ApiError
 from music_harvester.models import RawTrack, SourceConfig
 from music_harvester.sources import SourceUnavailable, adapter_for
-from music_harvester.sources.soundcloud import search_soundcloud_playlists
 from music_harvester.sources.lastfm import LastFmClient
-from music_harvester.sources.spotify import SpotifyClient
 
 
 BRIDGE_TITLE_WORDS = (
@@ -117,18 +115,20 @@ def candidate_sources(seeds: list[dict], source_urls: list[str], files: list[str
             sources.append(SourceConfig(name=f"bridge_text_{index}", platform="manual", source_type="manual_seed", url=text, weight=3.0, category="pasted_text"))
 
     if search_limit > 0:
-        try:
-            client = SpotifyClient()
-            combined_query = " ".join(seed["value"] for seed in seeds[:2])
-            for playlist in client.search_playlists(combined_query, limit=1):
-                external = (playlist.get("external_urls") or {}).get("spotify")
-                if not external or external in seen:
-                    continue
-                seen.add(external)
-                name = slug(f"bridge_spotify_{playlist.get('name') or 'playlist'}_{playlist.get('id')}")
-                sources.append(SourceConfig(name=name, platform="spotify", source_type="spotify_playlist", url=external, weight=2.0, category="structured_api"))
-        except Exception as exc:
-            notes.append(f"Spotify playlist candidate search unavailable: {exc}")
+        radio_artists = list(
+            dict.fromkeys(seed["artist"] for seed in seeds if seed.get("artist"))
+        )[:4]
+        for index, artist in enumerate(radio_artists, 1):
+            sources.append(
+                SourceConfig(
+                    name=slug(f"listenbrainz_radio_{index}_{artist}"),
+                    platform="listenbrainz",
+                    source_type="listenbrainz_radio",
+                    url=artist,
+                    weight=2.4,
+                    category="structured_api",
+                )
+            )
 
         try:
             lastfm = LastFmClient()
@@ -141,32 +141,10 @@ def candidate_sources(seeds: list[dict], source_urls: list[str], files: list[str
             sources = [source for source in sources if source.platform != "lastfm"]
             notes.append(f"Last.fm discovery unavailable: {exc}")
 
-        try:
-            soundcloud_added = 0
-            for query in bridge_queries(seeds)[:3]:
-                for playlist in search_soundcloud_playlists(query, limit=search_limit):
-                    external = playlist.get("permalink_url")
-                    if not external or external in seen:
-                        continue
-                    seen.add(external)
-                    name = slug(f"bridge_soundcloud_{playlist.get('title') or playlist.get('id')}")
-                    sources.append(
-                        SourceConfig(
-                            name=name,
-                            platform="soundcloud",
-                            source_type="soundcloud_playlist",
-                            url=external,
-                            weight=2.4,
-                            category="structured_api",
-                        )
-                    )
-                    soundcloud_added += 1
-                    if soundcloud_added >= 12:
-                        break
-                if soundcloud_added >= 12:
-                    break
-        except Exception as exc:
-            notes.append(f"SoundCloud playlist candidate search unavailable: {exc}")
+        notes.append(
+            f"ListenBrainz artist radio enabled for {len(radio_artists)} seed artist(s); "
+            "Spotify and unofficial SoundCloud crawling were not used for discovery."
+        )
 
     return sources, notes
 

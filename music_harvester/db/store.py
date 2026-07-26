@@ -15,6 +15,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("pragma foreign_keys = on")
 
     def init(self) -> None:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
@@ -28,6 +29,7 @@ class Store:
                 "category": "text not null default 'structured_api'",
             },
             "raw_tracks": {
+                "normalized_track_id": "integer references normalized_tracks(id)",
                 "source_platform": "text",
                 "source_type": "text",
                 "source_name": "text",
@@ -82,9 +84,10 @@ class Store:
     def add_music_candidates(self, source_id: int, candidates: Iterable[MusicCandidate]) -> int:
         count = 0
         for candidate in candidates:
-            raw_id = self._insert_music_candidate(source_id, candidate)
             normalized_id = self._upsert_normalized(candidate)
+            raw_id = self._insert_music_candidate(source_id, normalized_id, candidate)
             self._insert_provenance(normalized_id, source_id, candidate)
+            self._upsert_platform_resolution(normalized_id, candidate)
             count += 1 if raw_id else 0
         self.conn.commit()
         return count
@@ -100,18 +103,19 @@ class Store:
             category=row["category"],
         )
 
-    def _insert_music_candidate(self, source_id: int, track: MusicCandidate) -> int:
+    def _insert_music_candidate(self, source_id: int, normalized_id: int, track: MusicCandidate) -> int:
         cursor = self.conn.execute(
             """
             insert into raw_tracks (
-              source_id, platform_track_id, raw_artist, raw_title, raw_album, raw_url,
+              source_id, normalized_track_id, platform_track_id, raw_artist, raw_title, raw_album, raw_url,
               source_platform, source_type, source_name, source_url, source_weight, source_context,
               extraction_confidence, normalization_confidence, spotify_resolution_confidence,
               raw_payload_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
+                normalized_id,
                 track.platform_track_id,
                 track.artist,
                 track.title,
@@ -131,6 +135,31 @@ class Store:
         )
         return int(cursor.lastrowid)
 
+    def _upsert_platform_resolution(self, normalized_id: int, track: MusicCandidate) -> None:
+        resolutions: list[tuple[str, str, str | None, float, str]] = []
+        spotify_uri = track.payload.get("spotify_uri")
+        if spotify_uri:
+            resolutions.append(("spotify", spotify_uri, track.url, 1.0, json.dumps({"source": track.source_name})))
+        if track.platform == "soundcloud" and track.platform_track_id:
+            resolutions.append(("soundcloud", track.platform_track_id, track.url, 1.0, json.dumps({"source": track.source_name})))
+        musicbrainz_id = track.payload.get("musicbrainz_id")
+        if musicbrainz_id:
+            resolutions.append(("musicbrainz", musicbrainz_id, track.url, 1.0, json.dumps({"source": track.source_name})))
+        for target, external_id, url, confidence, evidence in resolutions:
+            self.conn.execute(
+                """
+                insert into platform_resolutions (
+                  normalized_track_id, target, external_id, url, confidence, evidence_json
+                ) values (?, ?, ?, ?, ?, ?)
+                on conflict(normalized_track_id, target, external_id) do update set
+                  url=coalesce(excluded.url, platform_resolutions.url),
+                  confidence=max(platform_resolutions.confidence, excluded.confidence),
+                  evidence_json=excluded.evidence_json,
+                  resolved_at=current_timestamp
+                """,
+                (normalized_id, target, external_id, url, confidence, evidence),
+            )
+
     def _upsert_normalized(self, track: MusicCandidate) -> int:
         artist = normalize_text(track.artist)
         title = normalize_text(track.title)
@@ -138,18 +167,20 @@ class Store:
         key = normalize_key(artist, title)
         spotify_uri = track.payload.get("spotify_uri") if track.platform == "spotify" else None
         soundcloud_url = track.url if track.platform == "soundcloud" else None
+        musicbrainz_id = track.payload.get("musicbrainz_id")
 
         self.conn.execute(
             """
             insert into normalized_tracks (
-              canonical_artist, canonical_title, canonical_album, spotify_uri, soundcloud_url, unique_key
-            ) values (?, ?, ?, ?, ?, ?)
+              canonical_artist, canonical_title, canonical_album, spotify_uri, soundcloud_url, musicbrainz_id, unique_key
+            ) values (?, ?, ?, ?, ?, ?, ?)
             on conflict(unique_key) do update set
               spotify_uri=coalesce(normalized_tracks.spotify_uri, excluded.spotify_uri),
               soundcloud_url=coalesce(normalized_tracks.soundcloud_url, excluded.soundcloud_url),
+              musicbrainz_id=coalesce(normalized_tracks.musicbrainz_id, excluded.musicbrainz_id),
               canonical_album=coalesce(normalized_tracks.canonical_album, excluded.canonical_album)
             """,
-            (artist, title, album, spotify_uri, soundcloud_url, key),
+            (artist, title, album, spotify_uri, soundcloud_url, musicbrainz_id, key),
         )
         row = self.conn.execute("select id from normalized_tracks where unique_key = ?", (key,)).fetchone()
         return int(row["id"])
@@ -157,7 +188,7 @@ class Store:
     def _insert_provenance(self, normalized_id: int, source_id: int, track: MusicCandidate) -> None:
         self.conn.execute(
             """
-            insert into track_provenance (
+            insert or ignore into track_provenance (
               normalized_track_id, source_id, source_context, playlist_title, position
             ) values (?, ?, ?, ?, ?)
             """,
@@ -167,6 +198,44 @@ class Store:
     def candidates(self) -> list[Candidate]:
         rows = self.conn.execute(
             """
+            with effective_edges as (
+              select distinct normalized_track_id, source_id, source_context, playlist_title
+              from track_provenance
+            ),
+            evidence as (
+              select
+                ee.normalized_track_id,
+                group_concat(distinct s.name) as source_names,
+                group_concat(distinct s.platform) as platforms,
+                group_concat(distinct coalesce(ee.playlist_title, '')) as playlist_titles,
+                sum(s.weight) as source_weight,
+                count(distinct s.id) as source_count,
+                count(distinct s.platform) as platform_count
+              from effective_edges ee
+              join sources s on s.id = ee.source_id
+              group by ee.normalized_track_id
+            ),
+            confidence as (
+              select
+                rt.normalized_track_id,
+                avg(rt.extraction_confidence) as extraction_confidence,
+                avg(rt.normalization_confidence) as normalization_confidence,
+                max(rt.spotify_resolution_confidence) as spotify_resolution_confidence
+              from raw_tracks rt
+              where rt.normalized_track_id is not null
+              group by rt.normalized_track_id
+            ),
+            bridge as (
+              select
+                tp.normalized_track_id,
+                max(bs.confidence_score) as bridge_source_score,
+                group_concat(distinct bs.match_type) as bridge_match_types,
+                group_concat(distinct bs.seed_sides_json) as bridge_seed_sides_json,
+                max(case when bs.match_type in ('exact_all_seeds', 'exact_some_seeds', 'near_bridge') then 1 else 0 end) as has_strong_bridge_match
+              from (select distinct normalized_track_id, source_id from track_provenance) tp
+              join bridge_sources bs on bs.source_id = tp.source_id
+              group by tp.normalized_track_id
+            )
             select
               nt.id,
               nt.canonical_artist,
@@ -174,27 +243,19 @@ class Store:
               nt.canonical_album,
               nt.spotify_uri,
               nt.soundcloud_url,
-              group_concat(distinct s.name) as source_names,
-              group_concat(distinct s.platform) as platforms,
-              group_concat(distinct coalesce(tp.playlist_title, '')) as playlist_titles,
-              avg(rt.extraction_confidence) as extraction_confidence,
-              avg(rt.normalization_confidence) as normalization_confidence,
-              max(rt.spotify_resolution_confidence) as spotify_resolution_confidence,
-              coalesce(max(bs.confidence_score), 0) as bridge_source_score,
-              group_concat(distinct bs.match_type) as bridge_match_types,
-              group_concat(distinct bs.seed_sides_json) as bridge_seed_sides_json,
-              max(case when bs.match_type in ('exact_all_seeds', 'exact_some_seeds', 'near_bridge') then 1 else 0 end) as has_strong_bridge_match,
-              sum(s.weight) as source_weight,
-              count(distinct s.id) as source_count,
-              count(distinct s.platform) as platform_count
+              nt.musicbrainz_id,
+              evidence.*,
+              confidence.extraction_confidence,
+              confidence.normalization_confidence,
+              confidence.spotify_resolution_confidence,
+              coalesce(bridge.bridge_source_score, 0) as bridge_source_score,
+              bridge.bridge_match_types,
+              bridge.bridge_seed_sides_json,
+              coalesce(bridge.has_strong_bridge_match, 0) as has_strong_bridge_match
             from normalized_tracks nt
-            join track_provenance tp on tp.normalized_track_id = nt.id
-            join sources s on s.id = tp.source_id
-            left join raw_tracks rt on rt.source_id = s.id
-              and lower(rt.raw_artist) = lower(nt.canonical_artist)
-              and lower(rt.raw_title) = lower(nt.canonical_title)
-            left join bridge_sources bs on bs.source_id = s.id
-            group by nt.id
+            join evidence on evidence.normalized_track_id = nt.id
+            left join confidence on confidence.normalized_track_id = nt.id
+            left join bridge on bridge.normalized_track_id = nt.id
             """
         ).fetchall()
 
@@ -206,6 +267,7 @@ class Store:
                 album=row["canonical_album"],
                 spotify_uri=row["spotify_uri"],
                 soundcloud_url=row["soundcloud_url"],
+                musicbrainz_id=row["musicbrainz_id"],
                 score=float(row["source_weight"] or 0),
                 sources=_csv(row["source_names"]),
                 platforms=_csv(row["platforms"]),
@@ -331,6 +393,16 @@ class Store:
             )
         self.conn.commit()
         return run_id
+
+    def existing_track_ids(self, track_ids: list[int]) -> list[int]:
+        if not track_ids:
+            return []
+        placeholders = ",".join("?" for _ in track_ids)
+        rows = self.conn.execute(
+            f"select id from normalized_tracks where id in ({placeholders})",
+            track_ids,
+        ).fetchall()
+        return [int(row["id"]) for row in rows]
 
 
 def _csv(value: str | None) -> list[str]:

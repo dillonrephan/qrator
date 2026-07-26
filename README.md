@@ -1,19 +1,21 @@
 # QRator Codex
 
-An independent QRator variant focused on isolated discovery runs, reviewable results, and explicit Spotify publishing.
+An independent QRator variant focused on isolated discovery runs, reviewable results, and explicit publishing.
 
 The original project at `/home/ice/projects/spotify` is not modified or used for runtime state.
 
-## Direction
+## Current Direction
 
-The next foundation phase is SoundCloud-first discovery using SoundCloud's
-official API, while keeping candidates platform-neutral and treating publishing
-destinations as explicit eligibility targets. Spotify remains a supported
-resolver and publishing target within its current Development Mode limits.
+QRator now has a useful credential-free discovery lane: artist seeds expand
+through the official ListenBrainz radio API, MusicBrainz supplies recording
+identity, and every result remains visible even when Spotify cannot resolve it.
+Spotify is a capped, strict resolver and explicit publishing target rather than
+the discovery engine.
 
-See [Platform Strategy](docs/PLATFORM_STRATEGY.md) for the intended API,
-trust-spider, eligibility, migration, and rollout design. That document is
-forward-looking; the current behavior described below has not yet been changed.
+SoundCloud-first discovery and publishing remain the next provider integration,
+using only SoundCloud's official OAuth API. See
+[Platform Strategy](docs/PLATFORM_STRATEGY.md) and
+[Implementation Status](docs/IMPLEMENTATION_STATUS.md).
 
 ## Setup
 
@@ -29,15 +31,17 @@ Configure and start the app:
 cp .env.example .env
 chmod 600 .env
 # Fill in the Spotify client ID and secret.
-# Add a Last.fm API key to enable profile and similar-track discovery.
+# Last.fm is optional. ListenBrainz artist-radio discovery needs no key.
 npm start
 ```
 
 The default address is `http://127.0.0.1:8787`.
 
-Install Python dependencies when they are not already available:
+Install Python dependencies in an isolated environment:
 
 ```bash
+python -m venv .venv
+. .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
@@ -53,9 +57,17 @@ python -m compileall -q music_harvester
 
 - The HTTP server listens only on loopback.
 - Each discovery request runs in its own temporary directory and SQLite database.
-- Spotify playlist discovery is capped at one search and one playlist per run; large playlists sample eight positions in normal mode.
-- SoundCloud discovery is capped at three queries and twelve unique playlists per run.
-- Final Spotify resolution uses one cached query per unique track and stops on rate limiting.
+- Keyless artist discovery uses bounded ListenBrainz radio and bulk MusicBrainz metadata.
+- Unsupported Spotify HTML scraping and SoundCloud web-client credential extraction are disabled.
+- Final Spotify resolution is strict, persistently cached, and capped at twelve new queries by default.
+- Spotify and Python discovery share a durable provider cooldown. Full `Retry-After`
+  values are retained; long waits return useful partial results instead of hammering.
+- SoundCloud-only and catalog-only candidates remain in review output, with direct
+  SoundCloud and YouTube search links when no publishable target resolution exists.
+- Provenance observations are idempotent and source weight is aggregated once per
+  candidate/source.
+- Platform identifiers are also stored in `platform_resolutions`; legacy columns
+  remain during the compatibility migration.
 - Last.fm profile URLs harvest six-month top tracks; seed tracks also draw from Last.fm similar tracks when `LASTFM_API_KEY` is configured.
 - Temporary discovery files are removed whether the run succeeds or fails.
 - Reviewed results are retained in memory for one hour and addressed by a random run ID.
@@ -72,4 +84,12 @@ The Python pipeline remains available directly:
 python -m music_harvester.main ingest
 python -m music_harvester.main generate --mode balanced_discovery --length 40
 python -m music_harvester.main write-spotify --playlist-name "QRator finds"
+```
+
+For a useful no-key discovery run today:
+
+```bash
+python -m music_harvester.main discover-from-seeds \
+  --artists Portishead Igorrr "Danny Brown" "Aphex Twin" \
+  --length 20
 ```

@@ -12,6 +12,7 @@ create table if not exists sources (
 create table if not exists raw_tracks (
   id integer primary key,
   source_id integer not null references sources(id),
+  normalized_track_id integer references normalized_tracks(id),
   platform_track_id text,
   raw_artist text not null,
   raw_title text not null,
@@ -42,6 +43,27 @@ create table if not exists normalized_tracks (
   unique_key text not null unique
 );
 
+create table if not exists platform_resolutions (
+  id integer primary key,
+  normalized_track_id integer not null references normalized_tracks(id),
+  target text not null,
+  external_id text not null,
+  url text,
+  confidence real not null default 1.0,
+  evidence_json text not null default '{}',
+  resolved_at text not null default current_timestamp,
+  unique (target, external_id),
+  unique (normalized_track_id, target, external_id)
+);
+
+create table if not exists schema_versions (
+  version integer primary key,
+  applied_at text not null default current_timestamp
+);
+
+insert or ignore into schema_versions (version) values (1);
+insert or ignore into schema_versions (version) values (2);
+
 create table if not exists track_provenance (
   id integer primary key,
   normalized_track_id integer not null references normalized_tracks(id),
@@ -50,6 +72,15 @@ create table if not exists track_provenance (
   playlist_title text,
   position integer,
   found_at text not null default current_timestamp
+);
+
+create unique index if not exists track_provenance_observation
+on track_provenance (
+  normalized_track_id,
+  source_id,
+  ifnull(source_context, ''),
+  ifnull(playlist_title, ''),
+  ifnull(position, -1)
 );
 
 create table if not exists feedback (

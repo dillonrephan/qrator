@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, writeFile, copyFile, chmod, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, chmod, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const tokenPath = path.join(root, '.spotify-token.json');
+const stateDir = path.join(root, 'data');
 const runFile = promisify(execFile);
 const MAX_BODY_BYTES = 256 * 1024;
 const RUN_TTL_MS = 60 * 60 * 1000;
@@ -62,6 +63,8 @@ async function handleRequest(req, res) {
         configured: Boolean(config.clientId && config.clientSecret),
         authenticated: existsSync(tokenPath),
         lastfmConfigured: Boolean(config.lastfmApiKey),
+        listenbrainzAvailable: true,
+        soundcloudConfigured: Boolean(process.env.SOUNDCLOUD_CLIENT_ID && process.env.SOUNDCLOUD_CLIENT_SECRET),
         redirectUri: config.redirectUri,
       });
     }
@@ -161,6 +164,7 @@ async function discover(req, res) {
   const runDir = await mkdtemp(path.join(os.tmpdir(), 'qrator-run-'));
   try {
     if (existsSync(tokenPath)) {
+      await getValidToken();
       const runTokenPath = path.join(runDir, '.spotify-token.json');
       await copyFile(tokenPath, runTokenPath);
       await chmod(runTokenPath, 0o600);
@@ -195,6 +199,7 @@ async function discover(req, res) {
       seeds: playlistSeeds(items),
       resolved: items.filter((item) => item.spotify_uri).length,
       total: items.length,
+      items: items.map(publicCandidate),
       mode,
     });
   } finally {
@@ -275,7 +280,12 @@ async function runPython(args, cwd) {
       cwd,
       timeout: 180_000,
       maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) },
+      env: {
+        ...process.env,
+        PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+        QRATOR_STATE_DIR: stateDir,
+        QRATOR_RUN_DEADLINE_UNIX: String(Date.now() / 1000 + 175),
+      },
     });
   } catch (error) {
     const detail = [error.stdout, error.stderr, error.message].filter(Boolean).join('\n');
@@ -290,10 +300,30 @@ async function readJsonFile(filePath, fallback) { try { return JSON.parse(await 
 function playlistSeeds(items) {
   return Array.isArray(items) ? items.map((item) => `${item.artist} - ${item.title}`.trim()).filter((item) => item && !item.startsWith(' - ')).slice(0, 12) : [];
 }
+function publicCandidate(item) {
+  return {
+    artist: cleanText(item.artist, 300),
+    title: cleanText(item.title, 500),
+    album: cleanText(item.album, 500),
+    spotify_uri: /^spotify:track:[A-Za-z0-9]+$/.test(String(item.spotify_uri || '')) ? item.spotify_uri : null,
+    soundcloud_url: safeExternalUrl(item.soundcloud_url, 'soundcloud.com'),
+    musicbrainz_id: /^[0-9a-f-]{36}$/i.test(String(item.musicbrainz_id || '')) ? item.musicbrainz_id : null,
+    score: Number(item.score) || 0,
+    sources: Array.isArray(item.sources) ? item.sources.map((source) => cleanText(source, 200)).slice(0, 12) : [],
+    why: cleanText(item.why, 1000),
+  };
+}
+function safeExternalUrl(value, hostname) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'https:' && (url.hostname === hostname || url.hostname.endsWith(`.${hostname}`)) ? url.toString() : null;
+  } catch { return null; }
+}
 
 async function spotifyProxy(res, url) { return json(res, 200, await spotifyFetch(url)); }
 
 async function spotifyFetch(url, options = {}) {
+  await assertProviderReady('spotify');
   const token = await getValidToken();
   const response = await fetch(url, {
     ...options,
@@ -302,8 +332,36 @@ async function spotifyFetch(url, options = {}) {
   const text = await response.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { error: { message: text } }; }
+  if (response.status === 429) await saveProviderCooldown('spotify', retryAfterSeconds(response.headers.get('retry-after')));
   if (!response.ok) throw spotifyError(response, data);
   return data;
+}
+
+function cooldownPath(provider) { return path.join(stateDir, `cooldown-${provider}.json`); }
+async function readProviderCooldown(provider) {
+  try { return Number(JSON.parse(await readFile(cooldownPath(provider), 'utf8')).until) || 0; }
+  catch { return 0; }
+}
+async function assertProviderReady(provider) {
+  const seconds = (await readProviderCooldown(provider)) - Date.now() / 1000;
+  if (seconds <= 0) return;
+  const error = new Error(`${provider} is cooling down for another ${Math.ceil(seconds)}s; try again after that window.`);
+  error.status = 429;
+  throw error;
+}
+async function saveProviderCooldown(provider, seconds) {
+  await mkdir(stateDir, { recursive: true });
+  const destination = cooldownPath(provider);
+  const until = Math.max(await readProviderCooldown(provider), Date.now() / 1000 + Math.max(1, seconds));
+  const temporary = `${destination}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify({ provider, until }), { mode: 0o600 });
+  await rename(temporary, destination);
+}
+function retryAfterSeconds(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  const timestamp = Date.parse(value || '');
+  return Number.isFinite(timestamp) ? Math.max(1, (timestamp - Date.now()) / 1000) : 2;
 }
 
 function spotifyError(response, data) {

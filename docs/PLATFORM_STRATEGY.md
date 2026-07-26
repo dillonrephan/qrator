@@ -1,8 +1,15 @@
 # QRator Platform Strategy
 
-Status: foundation plan, not yet implemented
+Status: staged implementation in progress
 
 Last reviewed: 2026-07-23
+
+Implementation checkpoint (2026-07-26): Stage 1 provenance aggregation and
+Stage 2 cooldown/partial-result foundations are active; keyless ListenBrainz
+radio now supplies official discovery while provider credentials are pending.
+Generic platform-resolution storage has begun, but the compatibility migration
+and official SoundCloud OAuth/URN adapter are not complete. See
+[Implementation Status](IMPLEMENTATION_STATUS.md).
 
 ## Objective
 

@@ -5,6 +5,7 @@ let latestSeeds = [];
 
 await refreshStatus();
 renderSelected();
+updateSeedCount();
 
 document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
@@ -12,8 +13,7 @@ document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click',
 }));
 
 $('#discover-query').addEventListener('input', (event) => {
-  const count = event.target.value.split(/\r?\n/).filter((line) => line.trim()).length;
-  $('#seed-count').textContent = `${count} ${count === 1 ? 'line' : 'lines'}`;
+  updateSeedCount(event.target.value);
 });
 
 $('#discover-form').addEventListener('submit', async (event) => {
@@ -67,7 +67,8 @@ async function refreshStatus() {
   const status = await api('/api/status');
   $('#connection-dot').classList.toggle('online', status.authenticated);
   const spotify = status.authenticated ? 'Spotify connected' : status.configured ? 'Spotify ready' : 'Spotify credentials required';
-  $('#status').textContent = `${spotify} / ${status.lastfmConfigured ? 'Last.fm active' : 'Last.fm key needed'}`;
+  const discovery = status.lastfmConfigured ? 'ListenBrainz + Last.fm discovery' : 'ListenBrainz discovery ready';
+  $('#status').textContent = `${spotify} / ${discovery}`;
   $('#connect').textContent = status.authenticated ? 'Reconnect' : 'Connect';
 }
 
@@ -95,7 +96,7 @@ async function runDiscovery(payload) {
 
 function renderDiscovery(data) {
   $('#result-title').textContent = data.mode === 'discover' ? 'Discovery playlist' : 'Seed shortlist';
-  $('#result-stats').innerHTML = `<span>${data.resolved} resolved</span><span>${data.total - data.resolved} unresolved</span>`;
+  $('#result-stats').innerHTML = `<span>${data.resolved} Spotify-ready</span><span>${data.total - data.resolved} catalog-only</span>`;
   const sections = [
     ['Shortlist', data.playlist],
     ['Sources', data.sources],
@@ -111,12 +112,24 @@ function renderDiscovery(data) {
     }));
     actions.append(expand);
   }
-  actions.append(button('Publish to Spotify', 'primary', openPublish));
+  if (data.resolved) actions.append(button('Publish to Spotify', 'primary', openPublish));
 
   const output = $('#discover-output');
   output.innerHTML = '';
   output.append(actions);
+  if (data.items?.length) {
+    const details = document.createElement('details');
+    details.open = true;
+    const summary = document.createElement('summary');
+    summary.textContent = 'Shortlist';
+    const list = document.createElement('div');
+    list.className = 'candidate-list';
+    for (const [index, item] of data.items.entries()) list.append(renderCandidate(item, index + 1));
+    details.append(summary, list);
+    output.append(details);
+  }
   for (const [title, content] of sections) {
+    if (title === 'Shortlist' && data.items?.length) continue;
     const details = document.createElement('details');
     details.open = title === 'Shortlist';
     const summary = document.createElement('summary');
@@ -126,6 +139,42 @@ function renderDiscovery(data) {
     details.append(summary, pre);
     output.append(details);
   }
+}
+
+function renderCandidate(item, index) {
+  const row = document.createElement('article');
+  row.className = 'candidate';
+  const number = document.createElement('span');
+  number.className = 'candidate-number';
+  number.textContent = String(index).padStart(2, '0');
+  const body = document.createElement('div');
+  body.className = 'candidate-body';
+  const title = document.createElement('strong');
+  title.textContent = item.title;
+  const artist = document.createElement('span');
+  artist.textContent = [item.artist, item.album].filter(Boolean).join(' — ');
+  const why = document.createElement('small');
+  why.textContent = item.why;
+  const links = document.createElement('div');
+  links.className = 'candidate-links';
+  if (item.spotify_uri) links.append(externalLink(`https://open.spotify.com/track/${item.spotify_uri.split(':').at(-1)}`, 'Spotify'));
+  if (item.soundcloud_url) links.append(externalLink(item.soundcloud_url, 'SoundCloud'));
+  if (item.musicbrainz_id) links.append(externalLink(`https://musicbrainz.org/recording/${item.musicbrainz_id}`, 'MusicBrainz'));
+  const query = encodeURIComponent(`${item.artist} ${item.title}`);
+  links.append(externalLink(`https://www.youtube.com/results?search_query=${query}`, 'YouTube search'));
+  links.append(externalLink(`https://soundcloud.com/search/sounds?q=${query}`, 'SoundCloud search'));
+  body.append(title, artist, why, links);
+  row.append(number, body);
+  return row;
+}
+
+function externalLink(href, label) {
+  const link = document.createElement('a');
+  link.href = href;
+  link.target = '_blank';
+  link.rel = 'noreferrer';
+  link.textContent = label;
+  return link;
 }
 
 function openPublish() {
@@ -204,6 +253,10 @@ function renderSpotifyLink(element, href, label) {
   link.rel = 'noreferrer';
   link.textContent = label;
   element.append(link);
+}
+function updateSeedCount(value = $('#discover-query').value) {
+  const count = value.split(/\r?\n/).filter((line) => line.trim()).length;
+  $('#seed-count').textContent = `${count} ${count === 1 ? 'line' : 'lines'}`;
 }
 
 async function api(url, options = {}) {

@@ -126,6 +126,7 @@ class Candidate:
     platforms: list[str]
     playlist_titles: list[str]
     why: str
+    musicbrainz_id: str | None = None
     pools: list[str] = field(default_factory=list)
     score_components: dict[str, float] = field(default_factory=dict)
     bridge_source_score: float = 0.0

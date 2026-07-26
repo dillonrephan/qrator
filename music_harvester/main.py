@@ -336,7 +336,8 @@ def cmd_write_spotify(args: argparse.Namespace, store: Store) -> int:
         return 1
     selected = [candidate_from_json(item) for item in json.loads(FINAL_JSON.read_text(encoding="utf-8"))]
     playlist_id = write_spotify_playlist(selected, args.playlist_name, args.public, args.yes)
-    store.record_run(args.playlist_name, "manual", True, playlist_id, [item.id for item in selected])
+    track_ids = store.existing_track_ids([item.id for item in selected])
+    store.record_run(args.playlist_name, "manual", True, playlist_id, track_ids)
     print(f"wrote Spotify playlist: {playlist_id}")
     return 0
 
@@ -358,7 +359,12 @@ def cmd_run(args: argparse.Namespace, store: Store) -> int:
 def generate_playlist(store: Store, config_dir: Path, mode: str, length: int | None) -> tuple[list[Candidate], list[Candidate], list[Candidate]]:
     candidates, rejected = build_candidates(store, config_dir, None)
     rules = load_yaml(config_dir / "rules.yaml")
-    selected = sequence_playlist(candidates, rules, length, mode)
+    selection_pool = candidates
+    if mode == "bridge_discovery":
+        taste_profile = load_yaml(config_dir / "taste_profile.yaml")
+        known_artists = {item.casefold() for item in taste_profile.get("anchors", {}).get("artists", [])}
+        selection_pool = [item for item in candidates if item.artist.casefold() not in known_artists]
+    selected = sequence_playlist(selection_pool, rules, length, mode)
     mode_config = rules.get("modes", {}).get(mode, {})
     purpose = mode_config.get("purpose", "a balanced playlist")
     for candidate in selected:
@@ -480,12 +486,24 @@ def write_spotify_playlist(selected: list[Candidate], playlist_name: str, public
 
     client = SpotifyClient()
     resolver = SpotifyResolver(client)
+    resolved: list[Candidate] = []
+    for item in selected:
+        try:
+            resolver.resolve(item)
+        except ApiError as exc:
+            if exc.status == 429:
+                break
+            raise
+        if item.spotify_uri:
+            resolved.append(item)
+    uris = list(dict.fromkeys(item.spotify_uri for item in resolved if item.spotify_uri))
+    if not uris:
+        raise SourceUnavailable("No strictly matched Spotify tracks are available; no playlist was created.")
+
     playlist = client.post(
         "/me/playlists",
         {"name": playlist_name, "description": "Distilled by qrator from trusted human sources.", "public": public},
     )
-    uris = [resolver.resolve(item).spotify_uri for item in selected]
-    uris = [uri for uri in uris if uri]
     for index in range(0, len(uris), 100):
         client.post(f"/playlists/{playlist['id']}/items", {"uris": uris[index : index + 100]})
     return playlist["id"]
@@ -518,6 +536,7 @@ def candidate_to_json(item: Candidate) -> dict:
         "album": item.album,
         "spotify_uri": item.spotify_uri,
         "soundcloud_url": item.soundcloud_url,
+        "musicbrainz_id": item.musicbrainz_id,
         "score": item.score,
         "sources": item.sources,
         "platforms": item.platforms,
