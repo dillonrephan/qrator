@@ -21,12 +21,17 @@ Last updated: 2026-07-26
   of a monolithic taste-like score.
 - Explicit owner-only metadata archive with GUI inspection, JSON export, and
   per-track removal. Archive contents never feed ranking.
+- Disabled-by-default experimental ingestion of hydration metadata from an
+  explicitly supplied public SoundCloud page. It is host-, redirect-, byte-,
+  item-, and deadline-bounded and never calls `api-v2` or extracts a client ID.
 
 ## Intentionally disabled
 
 - Spotify public-playlist HTML scraping.
 - SoundCloud `api-v2` use and extraction of client IDs from web bundles.
 - Arbitrary Spotify-user playlist traversal.
+- Recursive or unattended SoundCloud crawling; the experimental reader is
+  explicit-input, one-page-only, unsupported, and opt-in.
 
 ## Next
 
@@ -49,3 +54,5 @@ Last updated: 2026-07-26
   cooldown (`QRATOR_MAX_RATE_LIMIT_WAIT_SECONDS`).
 - A 180-second discovery deadline by default
   (`QRATOR_DISCOVERY_DEADLINE_SECONDS`).
+- Experimental SoundCloud page reads: three redirects, 2 MiB, and 100 accepted
+  tracks by default, with hard caps of three redirects, 4 MiB, and 200 tracks.

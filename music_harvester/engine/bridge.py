@@ -175,7 +175,14 @@ def source_from_url(name: str, url: str, weight: float) -> SourceConfig | None:
     if "open.spotify.com/playlist" in url:
         return SourceConfig(name=name, platform="spotify", source_type="spotify_playlist", url=url, weight=weight, category="manual_urls")
     if "soundcloud.com" in url:
-        return SourceConfig(name=name, platform="soundcloud", source_type="soundcloud_playlist", url=url, weight=weight, category="manual_urls")
+        lowered = url.lower().rstrip("/")
+        if "/sets/" in lowered:
+            source_type = "soundcloud_playlist"
+        elif lowered.endswith("/likes"):
+            source_type = "soundcloud_likes"
+        else:
+            source_type = "soundcloud_public_page"
+        return SourceConfig(name=name, platform="soundcloud", source_type=source_type, url=url, weight=weight, category="manual_urls")
     if "last.fm/user/" in url.lower():
         return SourceConfig(name=name, platform="lastfm", source_type="lastfm_profile", url=url, weight=weight, category="manual_urls")
     if url.startswith(("http://", "https://")):

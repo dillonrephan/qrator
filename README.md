@@ -12,8 +12,10 @@ identity, and every result remains visible even when Spotify cannot resolve it.
 Spotify is a capped, strict resolver and explicit publishing target rather than
 the discovery engine.
 
-SoundCloud-first discovery and publishing remain the next provider integration,
-using only SoundCloud's official OAuth API. See
+SoundCloud-first discovery and publishing remain the next supported provider
+integration, using SoundCloud's official OAuth API. A disabled-by-default,
+bounded experimental reader can ingest metadata embedded in an explicitly
+provided public SoundCloud page while credentials are pending. See
 [Platform Strategy](docs/PLATFORM_STRATEGY.md) and
 [Implementation Status](docs/IMPLEMENTATION_STATUS.md). QRator's default
 ephemeral behavior and explicit archive boundary are documented in
@@ -66,6 +68,11 @@ python -m compileall -q music_harvester
   inspected, exported, or individually removed.
 - Keyless artist discovery uses bounded ListenBrainz radio and bulk MusicBrainz metadata.
 - Unsupported Spotify HTML scraping and SoundCloud web-client credential extraction are disabled.
+- An opt-in experimental SoundCloud public-page reader uses only page hydration
+  metadata and, for public profiles, SoundCloud's public recent-upload RSS feed:
+  no `api-v2`, JavaScript-bundle mining, or persisted web-client credentials.
+  It is bounded to SoundCloud HTTPS hosts, three redirects, 2 MiB, 100 tracks,
+  and the run deadline, and may break when SoundCloud changes its HTML.
 - Final Spotify resolution is strict, persistently cached, and capped at twelve new queries by default.
 - Spotify and Python discovery share a durable provider cooldown. Full `Retry-After`
   values are retained; long waits return useful partial results instead of hammering.
@@ -101,3 +108,19 @@ python -m music_harvester.main discover-from-seeds \
   --artists Björk "MF DOOM" "Boards of Canada" "Fela Kuti" \
   --length 20
 ```
+
+To explicitly raid a public SoundCloud user, likes page, or playlist through
+the unsupported experimental reader:
+
+```bash
+QRATOR_EXPERIMENTAL_SOUNDCLOUD_SCRAPE=1 \
+python -m music_harvester.main create-seeds \
+  --source-url "https://soundcloud.com/example/likes" \
+  --length 40
+```
+
+This route is intentionally off by default and accepts only URLs supplied by
+the user; it does not recursively crawl arbitrary sites. Optional hard-capped
+budgets are `QRATOR_SOUNDCLOUD_SCRAPE_MAX_BYTES` (maximum 4 MiB),
+`QRATOR_SOUNDCLOUD_SCRAPE_MAX_ITEMS` (maximum 200), and
+`QRATOR_SOUNDCLOUD_SCRAPE_MAX_REDIRECTS` (maximum 3).

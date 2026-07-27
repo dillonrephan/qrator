@@ -36,6 +36,25 @@ architecture:
 
 Both can fail without notice and bypass the supported API capability model.
 
+### Temporary experimental public-page reader
+
+While application registration is pending, QRator contains a deliberately
+unsupported escape hatch for result-driven personal runs. When
+`QRATOR_EXPERIMENTAL_SOUNDCLOUD_SCRAPE=1` is set, an explicitly supplied
+public SoundCloud URL may be read for track metadata already embedded in its
+initial HTML hydration payload. Public user profiles may fall back once to
+SoundCloud's public recent-upload RSS feed using the hydrated user URN. This is
+not part of the supported provider architecture: it does not call `api-v2`,
+inspect JavaScript bundles, discover or retain client IDs, publish,
+authenticate, or recursively crawl.
+
+The reader is disabled by default, accepts only HTTPS SoundCloud hosts, checks
+DNS before each request and same-allowlist redirect, and caps redirects,
+response bytes, accepted tracks, and the shared run deadline. Layout changes,
+private shelves, and login walls fail loudly and return no invented result.
+The official OAuth/URN adapter remains the replacement rather than an extension
+of this reader.
+
 ## Official SoundCloud Integration
 
 All SoundCloud traffic will use the documented `api.soundcloud.com` and
