@@ -62,12 +62,25 @@ def request_json(
                 retry_after = retry_after_seconds(exc)
                 save_provider_cooldown(provider, retry_after)
                 if attempt < retries and retry_after <= max_rate_limit_wait() and time.monotonic() + retry_after < deadline:
+                    exc.close()
+                    time.sleep(retry_after)
+                    continue
+            elif exc.code in {500, 502, 503, 504} and attempt < retries:
+                retry_after = min(2.0**attempt, max_rate_limit_wait())
+                if time.monotonic() + retry_after < deadline:
+                    exc.close()
                     time.sleep(retry_after)
                     continue
             message = exc.read().decode("utf-8", errors="replace")
+            exc.close()
             try:
                 parsed = json.loads(message)
-                message = parsed.get("error_description") or parsed.get("message") or parsed.get("error", {}).get("message") or message
+                if isinstance(parsed, dict):
+                    nested_error = parsed.get("error")
+                    nested_message = nested_error.get("message") if isinstance(nested_error, dict) else None
+                    message = parsed.get("error_description") or parsed.get("message") or nested_message or nested_error or message
+                elif isinstance(parsed, str):
+                    message = parsed
             except json.JSONDecodeError:
                 pass
             raise ApiError(exc.code, message) from exc
