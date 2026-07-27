@@ -16,9 +16,11 @@ from urllib.request import Request, urlopen
 class ApiError(Exception):
     status: int
     message: str
+    reason: str | None = None
 
     def __str__(self) -> str:
-        return f"{self.status}: {self.message}"
+        reason = f" ({self.reason})" if self.reason else ""
+        return f"{self.status}: {self.message}{reason}"
 
 
 def request_json(
@@ -58,36 +60,55 @@ def request_json(
                 time.sleep(polite_delay)
                 return json.loads(payload) if payload else {}
         except HTTPError as exc:
+            raw_message = exc.read().decode("utf-8", errors="replace")
+            retry_after = retry_after_seconds(exc) if exc.code == 429 else None
+            exc.close()
+            message, reason = parse_api_error(raw_message)
             if exc.code == 429:
-                retry_after = retry_after_seconds(exc)
+                assert retry_after is not None
                 save_provider_cooldown(provider, retry_after)
-                if attempt < retries and retry_after <= max_rate_limit_wait() and time.monotonic() + retry_after < deadline:
-                    exc.close()
+                if (
+                    reason != "QUOTA_EXCEEDED"
+                    and attempt < retries
+                    and retry_after <= max_rate_limit_wait()
+                    and time.monotonic() + retry_after < deadline
+                ):
                     time.sleep(retry_after)
                     continue
             elif exc.code in {500, 502, 503, 504} and attempt < retries:
                 retry_after = min(2.0**attempt, max_rate_limit_wait())
                 if time.monotonic() + retry_after < deadline:
-                    exc.close()
                     time.sleep(retry_after)
                     continue
-            message = exc.read().decode("utf-8", errors="replace")
-            exc.close()
-            try:
-                parsed = json.loads(message)
-                if isinstance(parsed, dict):
-                    nested_error = parsed.get("error")
-                    nested_message = nested_error.get("message") if isinstance(nested_error, dict) else None
-                    message = parsed.get("error_description") or parsed.get("message") or nested_message or nested_error or message
-                elif isinstance(parsed, str):
-                    message = parsed
-            except json.JSONDecodeError:
-                pass
-            raise ApiError(exc.code, message) from exc
+            raise ApiError(exc.code, message, reason=reason) from exc
         except URLError as exc:
             raise ApiError(0, str(exc.reason)) from exc
 
     raise ApiError(0, "request retry loop exited unexpectedly")
+
+
+def parse_api_error(raw_message: str) -> tuple[str, str | None]:
+    message: object = raw_message
+    reason = None
+    try:
+        parsed = json.loads(raw_message)
+        if isinstance(parsed, dict):
+            nested_error = parsed.get("error")
+            nested_message = nested_error.get("message") if isinstance(nested_error, dict) else None
+            nested_reason = nested_error.get("reason") if isinstance(nested_error, dict) else None
+            reason = nested_reason if isinstance(nested_reason, str) else None
+            message = (
+                parsed.get("error_description")
+                or parsed.get("message")
+                or nested_message
+                or nested_error
+                or raw_message
+            )
+        elif isinstance(parsed, str):
+            message = parsed
+    except json.JSONDecodeError:
+        pass
+    return str(message), reason
 
 
 def retry_after_seconds(exc: HTTPError) -> float:

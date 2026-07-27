@@ -21,6 +21,7 @@ SPOTIFY_THOROUGH_SAMPLE_SIZE = 30
 SPOTIFY_FAST_FULL_API_READ_LIMIT = 250
 SPOTIFY_THOROUGH_FULL_API_READ_LIMIT = 500
 USER_RE = re.compile(r"user/([^/?]+)")
+USER_URI_RE = re.compile(r"^spotify:user:([^:]+)$")
 
 
 class SpotifyClient:
@@ -42,6 +43,7 @@ class SpotifyClient:
             params=params,
             polite_delay=polite_delay,
             retries=retries,
+            provider="spotify",
         )
 
     def post(self, path_or_url: str, body: dict | None = None) -> dict:
@@ -114,12 +116,7 @@ class SpotifySource(SourceAdapter):
             playlist = self.client.get(f"/playlists/{playlist_id}", params={"fields": "name"})
             playlist_title = playlist.get("name") or self.source.name
         except ApiError as exc:
-            if exc.status in {403, 404, 429}:
-                raise SourceUnavailable(
-                    "Spotify playlist items are unavailable to this application; "
-                    "copy the tracks to an owned/collaborative playlist or paste an export."
-                ) from exc
-            raise
+            raise_spotify_playlist_error(exc)
         tracks: list[RawTrack] = []
         url = f"/playlists/{playlist_id}/items"
         params = {"limit": 50}
@@ -127,12 +124,7 @@ class SpotifySource(SourceAdapter):
         try:
             first_page = self.client.get(url, params={"limit": 1})
         except ApiError as exc:
-            if exc.status in {403, 404, 429}:
-                raise SourceUnavailable(
-                    "Spotify playlist items are unavailable to this application; "
-                    "copy the tracks to an owned/collaborative playlist or paste an export."
-                ) from exc
-            raise
+            raise_spotify_playlist_error(exc)
         total = int(first_page.get("total") or 0)
         budget = spotify_source_budget()
         if total > budget["full_api_read_limit"]:
@@ -142,15 +134,13 @@ class SpotifySource(SourceAdapter):
             try:
                 page = self.client.get(url, params=params)
             except ApiError as exc:
-                if exc.status == 429 and tracks:
+                if exc.status == 429 and exc.reason != "QUOTA_EXCEEDED" and tracks:
                     return tracks
-                if exc.status in {403, 404, 429}:
-                    return tracks
-                raise
+                raise_spotify_playlist_error(exc)
             params = None
             for item in page.get("items", []):
                 position += 1
-                track = item.get("track") or {}
+                track = playlist_item_track(item)
                 raw = self._raw_track(track, playlist_title, position, "playlist")
                 if raw:
                     tracks.append(raw)
@@ -169,13 +159,11 @@ class SpotifySource(SourceAdapter):
                     retries=budget["retries"],
                 )
             except ApiError as exc:
-                if exc.status == 429 and tracks:
+                if exc.status == 429 and exc.reason != "QUOTA_EXCEEDED" and tracks:
                     return tracks
-                if exc.status in {403, 404}:
-                    return tracks
-                raise
+                raise_spotify_playlist_error(exc)
             item = (page.get("items") or [{}])[0]
-            raw = self._raw_track(item.get("track") or {}, playlist_title, position + 1, "playlist_sample")
+            raw = self._raw_track(playlist_item_track(item), playlist_title, position + 1, "playlist_sample")
             if raw:
                 tracks.append(raw)
         return tracks
@@ -201,6 +189,16 @@ class SpotifySource(SourceAdapter):
         )
 
     def _user_playlists(self, user_id: str) -> list[RawTrack]:
+        profile = self.client.get("/me")
+        current_user_ids = spotify_profile_identifiers(profile)
+        if not current_user_ids:
+            raise SourceUnavailable("Spotify did not return an identity for the authenticated user.")
+        if user_id not in current_user_ids:
+            raise SourceUnavailable(
+                "Spotify Development Mode cannot enumerate another user's playlists. "
+                "Use the authenticated user's profile, an owned/collaborative playlist, or paste an export."
+            )
+
         tracks: list[RawTrack] = []
         url = "/me/playlists"
         params = {"limit": 50}
@@ -208,12 +206,52 @@ class SpotifySource(SourceAdapter):
             page = self.client.get(url, params=params)
             params = None
             for playlist in page.get("items", []):
-                try:
-                    tracks.extend(self._playlist_tracks(playlist["id"]))
-                except ApiError:
+                owner_id = (playlist.get("owner") or {}).get("id")
+                if owner_id not in current_user_ids and not playlist.get("collaborative"):
                     continue
+                playlist_id = playlist.get("id")
+                if playlist_id:
+                    tracks.extend(self._playlist_tracks(playlist_id))
             url = page.get("next")
         return tracks
+
+
+def playlist_item_track(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    current = item.get("item")
+    if isinstance(current, dict):
+        return current
+    legacy = item.get("track")
+    return legacy if isinstance(legacy, dict) else {}
+
+
+def raise_spotify_playlist_error(exc: ApiError) -> None:
+    if exc.status == 403:
+        raise SourceUnavailable(
+            "Spotify Development Mode exposes playlist items only when the authenticated "
+            "user owns or collaborates on the playlist; copy it to an owned playlist or paste an export."
+        ) from exc
+    if exc.status == 404:
+        raise SourceUnavailable("Spotify could not find that playlist or it is not visible to this user.") from exc
+    raise exc
+
+
+def spotify_profile_identifiers(profile: dict) -> set[str]:
+    identifiers = set()
+    profile_id = profile.get("id")
+    if isinstance(profile_id, str) and profile_id:
+        identifiers.add(profile_id)
+    uri = profile.get("uri")
+    if isinstance(uri, str):
+        match = USER_URI_RE.fullmatch(uri)
+        if match:
+            identifiers.add(match.group(1))
+    external_url = (profile.get("external_urls") or {}).get("spotify")
+    extracted = extract_user_id(external_url) if isinstance(external_url, str) else None
+    if extracted:
+        identifiers.add(extracted)
+    return identifiers
 
 
 def extract_playlist_id(value: str) -> str | None:
@@ -256,6 +294,9 @@ def spotify_source_budget() -> dict[str, float | int]:
 
 
 def extract_user_id(value: str) -> str | None:
+    uri_match = USER_URI_RE.fullmatch(value or "")
+    if uri_match:
+        return uri_match.group(1)
     match = USER_RE.search(value or "")
     if match:
         return match.group(1)

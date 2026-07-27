@@ -16,6 +16,10 @@ Last updated: 2026-07-27
   caching, and a configurable per-run query budget.
 - Durable Spotify cooldown shared by the Node server and Python subprocesses.
 - Full `Retry-After` handling with bounded waits and partial-result behavior.
+- Spotify 2026 playlist compatibility: current `item.item` and legacy
+  `item.track` wrappers, authenticated identity checks for profile ingestion,
+  owned/collaborative filtering, and separate 403, ordinary 429, and
+  `QUOTA_EXCEEDED` classifications.
 - Idempotent provenance edges and one effective source weight per candidate.
 - Generic `platform_resolutions` storage alongside compatibility columns.
 - Spotify publishing preflight: QRator resolves first and will not create an empty

@@ -88,6 +88,14 @@ python -m compileall -q music_harvester
 - Final Spotify resolution is strict, persistently cached, and capped at twelve new queries by default.
 - Spotify and Python discovery share a durable provider cooldown. Full `Retry-After`
   values are retained; long waits return useful partial results instead of hammering.
+- Spotify playlist ingestion accepts the current `item` response shape and the
+  legacy `track` wrapper. Development Mode profile inputs must identify the
+  authenticated user; followed playlists owned by someone else are not silently
+  read through `/me/playlists`.
+- Spotify 403 playlist responses are reported as ownership/collaboration
+  capability denials. Ordinary 429 responses retain cooldown/retry behavior,
+  while July 2026 `QUOTA_EXCEEDED` responses are preserved as terminal,
+  structured developer-account quota state for the current request.
 - SoundCloud-only and catalog-only candidates remain in review output, with direct
   SoundCloud and YouTube search links when no publishable target resolution exists.
 - Provenance observations are idempotent and source weight is aggregated once per

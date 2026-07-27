@@ -203,12 +203,13 @@ candidate.
 
 ## Spotify 2026 Capability Boundary
 
-Spotify Development Mode changed in February 2026. New Development Mode client
-IDs require a Premium account, are limited to one client ID per developer and
-five authorized users, and expose a reduced endpoint set. The other-user
-playlist endpoint `GET /users/{id}/playlists` has no replacement. Playlist
-contents in the reduced model are available only for playlists owned by the
-current user or playlists on which the user collaborates.
+Spotify Development Mode changed in February 2026. Development Mode requires
+the app owner to have Premium and permits five authorized users per app. As of
+the July 2026 change, a developer may create up to 25 client IDs, but their
+Development Mode clients share quota buckets at the developer-account level.
+The other-user playlist endpoint `GET /users/{id}/playlists` has no replacement.
+Playlist contents in the reduced model are available only for playlists owned
+by the current user or playlists on which the user collaborates.
 
 QRator will therefore use supported Spotify capabilities for:
 
@@ -219,12 +220,14 @@ QRator will therefore use supported Spotify capabilities for:
 - explicit playlist creation and item insertion.
 
 Spotify search remains available with a maximum page size of 10 and remains
-useful for strict track resolution. Owned/collaborative ingestion requires
-`playlist-read-private` and `playlist-read-collaborative`. `/me/playlists` may
-also enumerate followed playlists, so enumeration alone is not proof that
-contents are readable: QRator must verify ownership/collaboration metadata and
-treat 403 as an expected capability denial, never as a trigger for HTML
-scraping.
+useful for strict track resolution. The current playlist-items reference lists
+`playlist-read-private`; access is still limited to owned or collaborative
+playlists. `/me/playlists` may also enumerate followed playlists, so enumeration
+alone is not proof that contents are readable: QRator verifies the supplied
+profile against `/me`, filters ownership/collaboration metadata, and treats 403
+as an expected capability denial, never as a trigger for HTML scraping. The
+current response wrapper is `items[].item`; the legacy `items[].track` wrapper
+is accepted only as a compatibility fallback.
 
 Arbitrary public Spotify playlist traversal is not a dependable Development
 Mode discovery primitive. The supported user-mediated workarounds are:
@@ -238,19 +241,21 @@ but QRator must not scrape its HTML for playlist contents. Broader behavior may
 be enabled only behind a documented capability flag for an application that
 has the necessary extended access.
 
-The runtime capability matrix must distinguish new Development Mode, existing
-Development Mode, and Extended Quota applications and probe behavior
-gracefully. Spotify postponed some endpoint-access changes for existing
-Development Mode integrations in March 2026, while new client IDs use the
-reduced model and Extended Quota is unaffected; QRator must not infer
-capabilities from a date alone.
+Extended Quota applications remain outside the Development Mode restrictions.
+QRator still probes behavior gracefully rather than inferring capability from
+an application's creation date.
 
 Spotify rate-limit responses must honor the complete `Retry-After` value. A
-run-wide request budget and deadline take precedence over retrying indefinitely.
+An ordinary 429 may wait within that budget or return partial results. A 429
+whose structured reason is `QUOTA_EXCEEDED` is developer-account quota
+exhaustion under the July 2026 model: QRator records any supplied cooldown but
+does not retry it inside the current request.
 
 References:
 
 - [Spotify February 2026 migration guide](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
+- [Spotify July 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/july-2026)
+- [Spotify playlist-items reference](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
 - [Spotify developer-access update](https://developer.spotify.com/blog/2026-02-06-update-on-developer-access-and-platform-security)
 - [Spotify Web API rate limits](https://developer.spotify.com/documentation/web-api/concepts/rate-limits)
 

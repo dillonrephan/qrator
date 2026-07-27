@@ -506,9 +506,12 @@ function retryAfterSeconds(value) {
   return Number.isFinite(timestamp) ? Math.max(1, (timestamp - Date.now()) / 1000) : 2;
 }
 
-function spotifyError(response, data) {
-  const error = new Error(data.error?.message || data.error_description || `Spotify API failed with ${response.status}`);
+export function spotifyError(response, data) {
+  const reason = typeof data.error?.reason === 'string' ? data.error.reason : null;
+  const message = data.error?.message || data.error_description || `Spotify API failed with ${response.status}`;
+  const error = new Error(reason ? `${message} (${reason})` : message);
   error.status = response.status;
+  error.reason = reason;
   return error;
 }
 

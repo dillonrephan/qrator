@@ -13,6 +13,7 @@ import {
   readJson,
   readSavedTracks,
   selectRunItems,
+  spotifyError,
   writeSavedTracks,
 } from '../src/server.js';
 
@@ -68,6 +69,16 @@ test('reads valid JSON request bodies', async () => {
 test('rejects malformed and oversized JSON request bodies', async () => {
   await assert.rejects(readJson(Readable.from(['{'])), (error) => error.status === 400);
   await assert.rejects(readJson(Readable.from([Buffer.alloc(257 * 1024)])), (error) => error.status === 413);
+});
+
+test('preserves Spotify quota exhaustion as structured provider state', () => {
+  const error = spotifyError(
+    { status: 429 },
+    { error: { status: 429, message: 'Too many requests', reason: 'QUOTA_EXCEEDED' } },
+  );
+  assert.equal(error.status, 429);
+  assert.equal(error.reason, 'QUOTA_EXCEEDED');
+  assert.match(error.message, /QUOTA_EXCEEDED/);
 });
 
 test('creates an explicit metadata snapshot without taste or ranking state', () => {
