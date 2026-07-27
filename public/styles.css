@@ -59,6 +59,7 @@ h2 { font-size: 20px; }
 .stats span { padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 12px; }
 .stats .running { color: var(--amber); }
 .empty-state { min-height: 55vh; display: grid; place-content: center; justify-items: center; gap: 20px; color: var(--muted); }
+.empty-state[hidden] { display: none; }
 .signal { height: 70px; display: flex; align-items: end; gap: 7px; }
 .signal i { width: 8px; background: var(--green); border-radius: 2px; opacity: .8; }
 .signal i:nth-child(1), .signal i:nth-child(5) { height: 22px; }

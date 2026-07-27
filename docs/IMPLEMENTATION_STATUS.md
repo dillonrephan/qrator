@@ -40,23 +40,23 @@ Last updated: 2026-07-27
   requests. Spotify status failures degrade visibly while credential-free
   ListenBrainz discovery remains usable; slow status and archive reads do not
   leave forms or tabs inert.
+- The pre-run discovery empty state now obeys its `hidden` attribute after a
+  successful run. Browser regression verifies zero layout height and visible
+  shortlist/actions at 1920×1080 and 1280×720.
 - Disabled-by-default experimental ingestion of hydration metadata from an
   explicitly supplied public SoundCloud page. It is host-, redirect-, byte-,
   item-, and deadline-bounded and never calls `api-v2` or extracts a client ID.
 
 ## Deferred UI audit evidence
 
-The synthetic browser audit on 2026-07-27 also reproduced two separate client
-defects that are intentionally outside the startup-resilience repair:
+The synthetic browser audit on 2026-07-27 also reproduced a separate client
+defect that remains intentionally deferred:
 
-- `.empty-state { display: grid; }` overrides the element's `hidden` state after
-  discovery, leaving a 594 px pre-run message above valid results at desktop
-  sizes.
 - Keep/Skip rerenders the whole discovery result and drops keyboard focus to the
   document body.
 
-Both remain bounded follow-up work; neither was changed as part of the startup
-repair.
+The CSS cascade defect that left the empty state above valid discovery results
+is fixed. The focus defect remains bounded follow-up work and was not changed.
 
 ## Intentionally disabled
 

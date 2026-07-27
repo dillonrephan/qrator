@@ -168,6 +168,46 @@ async function createMockServer() {
       return json(res, 200, { tracks: [], usedForRanking: false, storage: 'synthetic test archive' });
     }
     if (req.method === 'POST' && url.pathname === '/api/discover') {
+      if (scenario(req) === 'successful-discovery') {
+        return json(res, 200, {
+          runId: 'synthetic-success',
+          mode: 'distill',
+          total: 2,
+          resolved: 0,
+          playlist: 'Synthetic Artist — First Track\nSecond Artist — Second Track',
+          sources: 'Synthetic fixture shelf',
+          unresolved: '',
+          log: 'Synthetic successful discovery.',
+          items: [
+            {
+              archive_id: 'synthetic-first',
+              artist: 'Synthetic Artist',
+              title: 'First Track',
+              album: 'Fixture One',
+              why: 'Found on the synthetic fixture shelf.',
+              shelf_confidence: 0.8,
+              discovery_distance: 'one shelf hop',
+              recording_confidence: 0.9,
+              spotify_uri: null,
+              soundcloud_url: null,
+              musicbrainz_id: null,
+            },
+            {
+              archive_id: 'synthetic-second',
+              artist: 'Second Artist',
+              title: 'Second Track',
+              album: 'Fixture Two',
+              why: 'Found beside the first synthetic track.',
+              shelf_confidence: 0.7,
+              discovery_distance: 'one shelf hop',
+              recording_confidence: 0.8,
+              spotify_uri: null,
+              soundcloud_url: null,
+              musicbrainz_id: null,
+            },
+          ],
+        });
+      }
       return json(res, 503, { error: 'Synthetic discovery stop.' });
     }
     return json(res, 404, { error: 'Synthetic route not found.' });
@@ -292,6 +332,69 @@ test('startup I/O cannot block handlers or credential-free discovery', { timeout
           }
         }
       }
+    }
+
+    for (const viewport of viewports) {
+      const sessionId = await openPage(cdp, base, 'successful-discovery', viewport);
+      const before = await evaluate(cdp, sessionId, `(() => {
+        const empty = document.querySelector('#discover-empty');
+        const output = document.querySelector('#discover-output');
+        return {
+          emptyHidden: empty.hidden,
+          emptyDisplay: getComputedStyle(empty).display,
+          emptyHeight: empty.getBoundingClientRect().height,
+          outputHidden: output.hidden,
+          outputDisplay: getComputedStyle(output).display,
+          outputHeight: output.getBoundingClientRect().height,
+        };
+      })()`);
+
+      assert.equal(before.emptyHidden, false, `${viewport.width}: pre-run empty state should be enabled`);
+      assert.notEqual(before.emptyDisplay, 'none', `${viewport.width}: pre-run empty state should render`);
+      assert.ok(before.emptyHeight > 0, `${viewport.width}: pre-run empty state should occupy space`);
+      assert.equal(before.outputHidden, true, `${viewport.width}: pre-run output should be hidden`);
+      assert.equal(before.outputDisplay, 'none', `${viewport.width}: hidden pre-run output should not render`);
+      assert.equal(before.outputHeight, 0, `${viewport.width}: hidden pre-run output should occupy no space`);
+
+      await evaluate(cdp, sessionId, `(() => {
+        document.querySelector('#discover-query').value = 'Synthetic Artist\\nSecond Artist';
+        document.querySelector('#discover-button').click();
+      })()`);
+      await waitFor(cdp, sessionId, `document.querySelector('#result-title').textContent === 'Seed shortlist'`);
+
+      const after = await evaluate(cdp, sessionId, `(() => {
+        const empty = document.querySelector('#discover-empty');
+        const output = document.querySelector('#discover-output');
+        const actions = output.querySelector('.result-actions');
+        const shortlist = output.querySelector('.candidate-list');
+        return {
+          emptyHidden: empty.hidden,
+          emptyDisplay: getComputedStyle(empty).display,
+          emptyHeight: empty.getBoundingClientRect().height,
+          outputHidden: output.hidden,
+          outputDisplay: getComputedStyle(output).display,
+          outputHeight: output.getBoundingClientRect().height,
+          actionTop: actions?.getBoundingClientRect().top,
+          shortlistTop: shortlist?.getBoundingClientRect().top,
+          candidates: shortlist?.children.length,
+        };
+      })()`);
+
+      assert.equal(after.emptyHidden, true, `${viewport.width}: successful discovery should set hidden`);
+      assert.equal(after.emptyDisplay, 'none', `${viewport.width}: hidden empty state must not render`);
+      assert.equal(after.emptyHeight, 0, `${viewport.width}: hidden empty state must occupy no space`);
+      assert.equal(after.outputHidden, false, `${viewport.width}: successful output should be enabled`);
+      assert.notEqual(after.outputDisplay, 'none', `${viewport.width}: successful output should render`);
+      assert.ok(after.outputHeight > 0, `${viewport.width}: successful output should occupy space`);
+      assert.equal(after.candidates, 2, `${viewport.width}: synthetic shortlist should render`);
+      assert.ok(
+        after.actionTop >= 0 && after.actionTop < viewport.height,
+        `${viewport.width}: action region should start inside the viewport`,
+      );
+      assert.ok(
+        after.shortlistTop >= 0 && after.shortlistTop < viewport.height,
+        `${viewport.width}: shortlist should start inside the viewport`,
+      );
     }
 
     const outbound = cdp.events

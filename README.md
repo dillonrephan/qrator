@@ -65,7 +65,9 @@ python -m compileall -q music_harvester
 
 The browser regression uses an installed Chromium binary, a disposable profile,
 and a loopback-only synthetic server. It does not start QRator's real server or
-contact music providers. Set `QRATOR_CHROMIUM` if Chromium is not installed at
+contact music providers. It verifies startup resilience and that successful
+discovery removes the pre-run empty state from layout at 1920×1080 and
+1280×720. Set `QRATOR_CHROMIUM` if Chromium is not installed at
 `/usr/bin/chromium-browser`.
 
 ## Runtime Model
