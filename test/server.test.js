@@ -12,6 +12,7 @@ import {
   parseLength,
   readJson,
   readSavedTracks,
+  selectRunItems,
   writeSavedTracks,
 } from '../src/server.js';
 
@@ -40,6 +41,23 @@ test('accepts only whole playlist lengths in range', () => {
   for (const value of [4, 61, 'nope', 10.5]) {
     assert.throws(() => parseLength(value), { message: /whole number from 5 to 60/ });
   }
+});
+
+test('publishing selection preserves the validated current mix', () => {
+  const items = [
+    { artist: 'A', title: 'One' },
+    { artist: 'B', title: 'Two' },
+    { artist: 'C', title: 'Three' },
+  ];
+  const ids = items.map(candidateArchiveId);
+
+  assert.equal(selectRunItems(items, undefined), items);
+  assert.deepEqual(selectRunItems(items, [ids[2], ids[0], ids[2]]), [items[2], items[0]]);
+  assert.throws(
+    () => selectRunItems(items, ['metadata:not-from-this-run']),
+    { message: /outside this discovery run/ },
+  );
+  assert.throws(() => selectRunItems(items, []), { message: /at least one track in the current mix/ });
 });
 
 test('reads valid JSON request bodies', async () => {

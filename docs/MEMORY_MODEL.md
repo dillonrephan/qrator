@@ -1,6 +1,6 @@
 # QRator Memory Model
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 ## Default: a fresh room
 
@@ -51,10 +51,25 @@ QRator presents three independent descriptions:
 
 None is a prediction that the user will enjoy the recording.
 
-## Future session controls
+## Current session controls
 
-Session-only actions such as “keep for this mix,” “skip this one,” and “raid
-this shelf deeper” may reshape the active run. They must not cross into durable
-storage unless a separate, plainly labeled local-memory feature is enabled.
+The review list now has two deliberately temporary judgments:
+
+- **Keep for this mix** marks a strong candidate. When at least two candidates
+  are kept, the next **Expand from shortlist** action uses those tracks as its
+  seeds. It does not exclude neutral candidates from the current mix.
+- **Skip this one** removes a candidate from the next expansion and from an
+  explicitly published Spotify playlist.
+
+Neutral candidates remain in the mix. Both judgments exist only in browser
+memory, reset when a new run succeeds or the page reloads, and are never sent
+to the metadata archive. On publish, the server validates the reviewed
+current-mix candidate identifiers against the short-lived discovery run; client-supplied
+tracks cannot be injected.
+
+“Raid this shelf deeper” remains future work because it needs a first-class
+source/shelf identifier rather than pretending that a track seed and a shelf
+are equivalent.
+
 Any future persistent judgment store must be inspectable, exportable, erasable,
 disabled by default, and separate from the explicit metadata archive.

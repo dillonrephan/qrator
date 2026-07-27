@@ -1,7 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
 const selected = new Map();
 let currentRun = null;
-let latestSeeds = [];
+let currentItems = [];
+let currentDiscoveryData = null;
+let sessionDecisions = new Map();
 let savedTracks = [];
 let savedArchiveIds = new Set();
 
@@ -89,10 +91,15 @@ async function runDiscovery(payload) {
   try {
     const data = await api('/api/discover', { method: 'POST', body: JSON.stringify(payload) });
     currentRun = data.runId;
-    latestSeeds = data.seeds || [];
+    currentItems = data.items || [];
+    currentDiscoveryData = data;
+    sessionDecisions = new Map();
     renderDiscovery(data);
   } catch (error) {
     currentRun = null;
+    currentItems = [];
+    currentDiscoveryData = null;
+    sessionDecisions = new Map();
     $('#result-title').textContent = 'Discovery failed';
     $('#result-stats').innerHTML = '';
     showText($('#discover-output'), error.message, 'error error-panel');
@@ -101,7 +108,7 @@ async function runDiscovery(payload) {
 
 function renderDiscovery(data) {
   $('#result-title').textContent = data.mode === 'discover' ? 'Discovery playlist' : 'Seed shortlist';
-  $('#result-stats').innerHTML = `<span>${data.resolved} Spotify-ready</span><span>${data.total - data.resolved} catalog-only</span>`;
+  renderDiscoveryStats(data);
   const sections = [
     ['Shortlist', data.playlist],
     ['Sources', data.sources],
@@ -111,13 +118,20 @@ function renderDiscovery(data) {
 
   const actions = document.createElement('div');
   actions.className = 'result-actions';
-  if (latestSeeds.length >= 2) {
+  const expansionSeeds = seedsForExpansion();
+  if (expansionSeeds.length >= 2) {
     const expand = button('Expand from shortlist', 'secondary', () => runDiscovery({
-      query: latestSeeds.join('\n'), length: Number($('#playlist-length').value), mode: 'discover', thorough: false,
+      query: seedsForExpansion().join('\n'), length: Number($('#playlist-length').value), mode: 'discover', thorough: false,
     }));
     actions.append(expand);
   }
-  if (data.resolved) actions.append(button('Publish to Spotify', 'primary', openPublish));
+  if (publishItems().some((item) => item.spotify_uri)) {
+    actions.append(button('Publish to Spotify', 'primary', openPublish));
+  }
+  const memoryNote = document.createElement('small');
+  memoryNote.className = 'session-note';
+  memoryNote.textContent = 'Keep and skip live only in this tab and reset with the next run.';
+  actions.append(memoryNote);
 
   const output = $('#discover-output');
   output.innerHTML = '';
@@ -129,7 +143,7 @@ function renderDiscovery(data) {
     summary.textContent = 'Shortlist';
     const list = document.createElement('div');
     list.className = 'candidate-list';
-    for (const [index, item] of data.items.entries()) list.append(renderCandidate(item, index + 1));
+    for (const [index, item] of currentItems.entries()) list.append(renderCandidate(item, index + 1));
     details.append(summary, list);
     output.append(details);
   }
@@ -146,9 +160,22 @@ function renderDiscovery(data) {
   }
 }
 
+function renderDiscoveryStats(data) {
+  const kept = decisionCount('keep');
+  const skipped = decisionCount('skip');
+  const parts = [
+    `<span>${data.resolved} Spotify-ready</span>`,
+    `<span>${data.total - data.resolved} catalog-only</span>`,
+  ];
+  if (kept) parts.push(`<span>${kept} kept</span>`);
+  if (skipped) parts.push(`<span>${skipped} skipped</span>`);
+  $('#result-stats').innerHTML = parts.join('');
+}
+
 function renderCandidate(item, index) {
   const row = document.createElement('article');
-  row.className = 'candidate';
+  const decision = sessionDecisions.get(item.archive_id);
+  row.className = ['candidate', decision ? `candidate-${decision}` : ''].filter(Boolean).join(' ');
   const number = document.createElement('span');
   number.className = 'candidate-number';
   number.textContent = String(index).padStart(2, '0');
@@ -175,6 +202,21 @@ function renderCandidate(item, index) {
   const query = encodeURIComponent(`${item.artist} ${item.title}`);
   links.append(externalLink(`https://www.youtube.com/results?search_query=${query}`, 'YouTube search'));
   links.append(externalLink(`https://soundcloud.com/search/sounds?q=${query}`, 'SoundCloud search'));
+  const review = document.createElement('div');
+  review.className = 'candidate-review';
+  const keep = button(
+    decision === 'keep' ? 'Kept for this mix' : 'Keep for this mix',
+    decision === 'keep' ? 'review-button active-keep' : 'review-button',
+    () => setSessionDecision(item.archive_id, decision === 'keep' ? null : 'keep'),
+  );
+  keep.setAttribute('aria-pressed', String(decision === 'keep'));
+  const skip = button(
+    decision === 'skip' ? 'Skipped' : 'Skip this one',
+    decision === 'skip' ? 'review-button active-skip' : 'review-button',
+    () => setSessionDecision(item.archive_id, decision === 'skip' ? null : 'skip'),
+  );
+  skip.setAttribute('aria-pressed', String(decision === 'skip'));
+  review.append(keep, skip);
   const save = button(
     savedArchiveIds.has(item.archive_id) ? 'Metadata saved' : 'Save this track’s metadata forever',
     'archive-button',
@@ -182,9 +224,30 @@ function renderCandidate(item, index) {
   );
   save.disabled = savedArchiveIds.has(item.archive_id);
   links.append(save);
-  body.append(title, artist, evidence, why, links);
+  body.append(title, artist, evidence, why, review, links);
   row.append(number, body);
   return row;
+}
+
+function setSessionDecision(archiveId, decision) {
+  if (decision) sessionDecisions.set(archiveId, decision);
+  else sessionDecisions.delete(archiveId);
+  renderDiscovery(currentDiscoveryData);
+}
+
+function decisionCount(decision) {
+  return [...sessionDecisions.values()].filter((value) => value === decision).length;
+}
+
+function publishItems() {
+  return currentItems.filter((item) => sessionDecisions.get(item.archive_id) !== 'skip');
+}
+
+function seedsForExpansion() {
+  const kept = currentItems.filter((item) => sessionDecisions.get(item.archive_id) === 'keep');
+  const reviewed = kept.length >= 2 ? kept : publishItems();
+  const seeds = reviewed.map((item) => `${item.artist} - ${item.title}`.trim()).filter(Boolean);
+  return seeds.slice(0, 12);
 }
 
 function metric(value, label) {
@@ -298,7 +361,8 @@ function openPublish() {
   output.querySelector('.publish-bar')?.remove();
   const form = document.createElement('form');
   form.className = 'publish-bar';
-  form.innerHTML = '<label><span>Playlist name</span><input name="name" maxlength="100" value="QRator discovery"></label><label class="toggle-row compact"><span><strong>Public</strong></span><input name="public" type="checkbox"></label><button class="primary" type="submit">Confirm publish</button><span class="publish-result"></span>';
+  const selectedCount = publishItems().filter((item) => item.spotify_uri).length;
+  form.innerHTML = `<label><span>Playlist name</span><input name="name" maxlength="100" value="QRator discovery"></label><label class="toggle-row compact"><span><strong>Public</strong></span><input name="public" type="checkbox"></label><button class="primary" type="submit">Publish ${selectedCount} Spotify-ready</button><span class="publish-result"></span>`;
   form.addEventListener('submit', publishDiscovery);
   output.prepend(form);
   form.elements.name.focus();
@@ -312,7 +376,12 @@ async function publishDiscovery(event) {
   try {
     const data = await api('/api/discover/playlist', {
       method: 'POST',
-      body: JSON.stringify({ runId: currentRun, name: form.elements.name.value, public: form.elements.public.checked }),
+      body: JSON.stringify({
+        runId: currentRun,
+        name: form.elements.name.value,
+        public: form.elements.public.checked,
+        archiveIds: publishItems().map((item) => item.archive_id),
+      }),
     });
     renderSpotifyLink(result, data.playlist.external_urls.spotify, `Open playlist (${data.added})`);
   } catch (error) { showText(result, error.message, 'error'); }

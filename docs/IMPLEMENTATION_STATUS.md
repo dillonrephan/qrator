@@ -1,6 +1,6 @@
 # QRator Implementation Status
 
-Last updated: 2026-07-26
+Last updated: 2026-07-27
 
 ## Working now
 
@@ -21,6 +21,13 @@ Last updated: 2026-07-26
   of a monolithic taste-like score.
 - Explicit owner-only metadata archive with GUI inspection, JSON export, and
   per-track removal. Archive contents never feed ranking.
+- Session-only keep/skip review controls. Kept tracks can seed the next
+  expansion; skipped tracks are excluded from expansion and publishing.
+  Judgments reset on the next run or reload and never enter durable storage.
+- Spotify publishing accepts the current non-skipped mix only after validating
+  every candidate identifier against the short-lived discovery run. Neutral
+  candidates remain included; **Keep** is a priority/next-seed marker, not an
+  exclusive-membership toggle.
 - Disabled-by-default experimental ingestion of hydration metadata from an
   explicitly supplied public SoundCloud page. It is host-, redirect-, byte-,
   item-, and deadline-bounded and never calls `api-v2` or extracts a client ID.
@@ -40,7 +47,8 @@ Last updated: 2026-07-26
    pagination, and capability diagnostics.
 3. Add SoundCloud user OAuth, strict resolution, and a private three-track publish
    canary.
-4. Add session-only “keep,” “skip,” and “raid this shelf deeper” controls.
+4. Add first-class shelf identifiers, then implement session-only “raid this
+   shelf deeper” without conflating shelves with individual track seeds.
 5. Add an opt-in persistent judgment store only after its inspect/export/erase
    controls and non-ranking boundaries are specified.
 6. Expand deterministic scoring, traversal, and provider-failure fixtures.

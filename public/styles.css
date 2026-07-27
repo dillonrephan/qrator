@@ -82,6 +82,14 @@ summary { cursor: pointer; padding: 15px 4px; font-weight: 750; }
 .candidate-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
 .candidate-links a { color: var(--green); font-size: 12px; font-weight: 700; text-decoration: none; }
 .candidate-links a:hover { text-decoration: underline; }
+.candidate-review { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.review-button { min-height: 28px; padding: 0 9px; border-color: var(--line); background: transparent; color: var(--muted); font-size: 11px; }
+.review-button:hover { border-color: #687269; color: var(--text); }
+.review-button.active-keep { border-color: var(--green); background: var(--green-dark); color: var(--green); }
+.review-button.active-skip { border-color: #694545; background: #2d1c1c; color: var(--danger); }
+.candidate-keep { box-shadow: inset 2px 0 var(--green); }
+.candidate-skip { opacity: .58; }
+.session-note { align-self: center; color: var(--muted); font-size: 11px; }
 .archive-button, .remove-button { min-height: 24px; height: auto; padding: 0; border: 0; background: transparent; color: var(--green); font-size: 12px; }
 .remove-button { color: var(--danger); }
 .library-note { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }

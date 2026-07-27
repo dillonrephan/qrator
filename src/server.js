@@ -227,7 +227,8 @@ async function createDiscoveryPlaylist(req, res) {
   const runId = String(body.runId || '');
   const run = discoveryRuns.get(runId);
   if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before publishing.' });
-  const uris = validSpotifyUris(run.items.map((item) => item.spotify_uri));
+  const selectedItems = selectRunItems(run.items, body.archiveIds);
+  const uris = validSpotifyUris(selectedItems.map((item) => item.spotify_uri));
   if (!uris.length) return json(res, 400, { error: 'This run has no Spotify-resolved tracks.' });
   const name = cleanText(body.name, 100) || `QRator discovery ${new Date().toISOString().slice(0, 10)}`;
   const playlist = await writePlaylist({
@@ -236,7 +237,7 @@ async function createDiscoveryPlaylist(req, res) {
     isPublic: Boolean(body.public),
     uris,
   });
-  return json(res, 201, { playlist, added: uris.length, unresolved: run.items.length - uris.length });
+  return json(res, 201, { playlist, added: uris.length, unresolved: selectedItems.length - uris.length });
 }
 
 async function archiveCandidate(req, res) {
@@ -318,6 +319,36 @@ export function parseLength(value) {
     throw error;
   }
   return length;
+}
+
+export function selectRunItems(items, archiveIds) {
+  if (archiveIds === undefined || archiveIds === null) return items;
+  if (!Array.isArray(archiveIds) || archiveIds.length > 60) {
+    const error = new Error('Current mix selection must be a list of at most 60 candidates.');
+    error.status = 400;
+    throw error;
+  }
+  const byId = new Map(items.map((item) => [candidateArchiveId(item), item]));
+  const selected = [];
+  const seen = new Set();
+  for (const rawId of archiveIds) {
+    const archiveId = cleanText(rawId, 200);
+    if (!archiveId || !byId.has(archiveId)) {
+      const error = new Error('Current mix selection contains a candidate outside this discovery run.');
+      error.status = 400;
+      throw error;
+    }
+    if (!seen.has(archiveId)) {
+      selected.push(byId.get(archiveId));
+      seen.add(archiveId);
+    }
+  }
+  if (!selected.length) {
+    const error = new Error('Keep at least one track in the current mix before publishing.');
+    error.status = 400;
+    throw error;
+  }
+  return selected;
 }
 
 function looksLikeTrack(line) { return /\s[-–—:]\s/.test(line) || /\sby\s/i.test(line); }

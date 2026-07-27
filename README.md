@@ -63,6 +63,9 @@ python -m compileall -q music_harvester
 - Each discovery request runs in its own temporary directory and SQLite database.
 - QRator ships with no personal taste anchors and does not learn a durable taste
   profile by default.
+- Review controls are session-only: **Keep for this mix** prioritizes tracks as
+  seeds for the next expansion, while **Skip this one** excludes tracks from
+  expansion and publishing. Both reset on the next run or page reload.
 - The GUI's **Save this track's metadata forever** action is an explicit local
   archive operation. Saved metadata is never used for ranking and can be
   inspected, exported, or individually removed.
