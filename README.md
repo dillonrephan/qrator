@@ -59,8 +59,14 @@ python -m pip install -r requirements.txt
 ```bash
 npm run check
 npm test
+npm run test:browser
 python -m compileall -q music_harvester
 ```
+
+The browser regression uses an installed Chromium binary, a disposable profile,
+and a loopback-only synthetic server. It does not start QRator's real server or
+contact music providers. Set `QRATOR_CHROMIUM` if Chromium is not installed at
+`/usr/bin/chromium-browser`.
 
 ## Runtime Model
 

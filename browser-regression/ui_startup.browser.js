@@ -1,0 +1,314 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const publicDir = path.join(root, 'public');
+const chromium = process.env.QRATOR_CHROMIUM || '/usr/bin/chromium-browser';
+
+class PipeCdp {
+  constructor(profileDirectory) {
+    this.buffer = '';
+    this.closing = false;
+    this.events = [];
+    this.failure = null;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.stderr = '';
+    this.process = spawn(chromium, [
+      '--headless=new',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-default-apps',
+      '--disable-domain-reliability',
+      '--disable-features=OptimizationHints,MediaRouter',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--remote-debugging-pipe',
+      `--user-data-dir=${profileDirectory}`,
+      'about:blank',
+    ], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+    this.closed = new Promise((resolve) => this.process.once('close', resolve));
+    this.process.stdio[4].on('data', (chunk) => this.#receive(chunk));
+    this.process.stdio[3].on('error', (error) => this.#fail(`CDP input pipe failed: ${error.message}`));
+    this.process.stdio[4].on('error', (error) => this.#fail(`CDP output pipe failed: ${error.message}`));
+    this.process.stderr.on('data', (chunk) => {
+      this.stderr = `${this.stderr}${chunk.toString('utf8')}`.slice(-4_000);
+    });
+    this.process.once('error', (error) => this.#fail(`could not start ${chromium}: ${error.message}`));
+    this.process.once('exit', (code, signal) => {
+      if (!this.closing) this.#fail(`Chromium exited before the audit completed (code=${code}, signal=${signal})`);
+    });
+  }
+
+  #receive(chunk) {
+    try {
+      this.buffer += chunk.toString('utf8');
+      for (;;) {
+        const boundary = this.buffer.indexOf('\0');
+        if (boundary === -1) return;
+        const raw = this.buffer.slice(0, boundary);
+        this.buffer = this.buffer.slice(boundary + 1);
+        if (!raw) continue;
+        const message = JSON.parse(raw);
+        if (!message.id) {
+          this.events.push(message);
+          continue;
+        }
+        const waiter = this.pending.get(message.id);
+        if (!waiter) continue;
+        this.pending.delete(message.id);
+        if (message.error) waiter.reject(new Error(JSON.stringify(message.error)));
+        else waiter.resolve(message.result);
+      }
+    } catch (error) {
+      this.#fail(`invalid CDP response: ${error.message}`);
+    }
+  }
+
+  #fail(reason) {
+    if (this.failure) return;
+    const detail = this.stderr.trim();
+    this.failure = new Error([
+      `Headless Chromium startup/CDP failure: ${reason}.`,
+      detail ? `Chromium stderr:\n${detail}` : 'Chromium produced no stderr.',
+      'Run this browser regression outside restricted sandboxes or set QRATOR_CHROMIUM to a working Chromium binary.',
+    ].join('\n'));
+    for (const waiter of this.pending.values()) waiter.reject(this.failure);
+    this.pending.clear();
+  }
+
+  send(method, params = {}, sessionId) {
+    if (this.failure) return Promise.reject(this.failure);
+    const id = this.nextId++;
+    const message = { id, method, params };
+    if (sessionId) message.sessionId = sessionId;
+    const response = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    try {
+      this.process.stdio[3].write(`${JSON.stringify(message)}\0`, (error) => {
+        if (error) this.#fail(`could not write ${method} to the CDP pipe: ${error.message}`);
+      });
+    } catch (error) {
+      this.#fail(`could not write ${method} to the CDP pipe: ${error.message}`);
+    }
+    return response;
+  }
+
+  async close() {
+    this.closing = true;
+    if (this.process.exitCode === null && this.process.signalCode === null) {
+      try {
+        this.process.kill('SIGTERM');
+      } catch {
+        // An early spawn failure is already captured with actionable detail.
+      }
+    }
+    await this.closed;
+  }
+}
+
+function send(res, status, contentType, body) {
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' https:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+  });
+  res.end(body);
+}
+
+function json(res, status, value) {
+  send(res, status, 'application/json; charset=utf-8', JSON.stringify(value));
+}
+
+function scenario(req) {
+  try {
+    return new URL(req.headers.referer).searchParams.get('case') || 'normal';
+  } catch {
+    return 'normal';
+  }
+}
+
+async function createMockServer() {
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    if (req.method === 'GET' && url.pathname === '/') {
+      return send(res, 200, 'text/html; charset=utf-8', await readFile(path.join(publicDir, 'index.html')));
+    }
+    if (req.method === 'GET' && url.pathname === '/app.js') {
+      return send(res, 200, 'text/javascript; charset=utf-8', await readFile(path.join(publicDir, 'app.js')));
+    }
+    if (req.method === 'GET' && url.pathname === '/styles.css') {
+      return send(res, 200, 'text/css; charset=utf-8', await readFile(path.join(publicDir, 'styles.css')));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/status') {
+      const mode = scenario(req);
+      if (mode === 'slow-status') await new Promise((resolve) => setTimeout(resolve, 600));
+      if (mode === 'failed-status') return json(res, 503, { error: 'Synthetic status failure.' });
+      if (mode === 'non-json-status') return send(res, 200, 'text/plain; charset=utf-8', 'not json');
+      return json(res, 200, {
+        configured: false,
+        authenticated: false,
+        lastfmConfigured: false,
+        listenbrainzAvailable: true,
+        soundcloudConfigured: false,
+        redirectUri: 'http://127.0.0.1/callback',
+      });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/library') {
+      if (scenario(req) === 'slow-library') await new Promise((resolve) => setTimeout(resolve, 600));
+      return json(res, 200, { tracks: [], usedForRanking: false, storage: 'synthetic test archive' });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/discover') {
+      return json(res, 503, { error: 'Synthetic discovery stop.' });
+    }
+    return json(res, 404, { error: 'Synthetic route not found.' });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return server;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function removeDisposableProfile(profile) {
+  await rm(profile, { recursive: true, force: true });
+  await assert.rejects(access(profile), (error) => error.code === 'ENOENT');
+}
+
+async function evaluate(cdp, sessionId, expression) {
+  const response = await cdp.send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  }, sessionId);
+  if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails));
+  return response.result.value;
+}
+
+async function waitFor(cdp, sessionId, expression, timeout = 3_000) {
+  const started = Date.now();
+  for (;;) {
+    if (await evaluate(cdp, sessionId, `Boolean(${expression})`)) return;
+    if (Date.now() - started > timeout) throw new Error(`Timed out waiting for ${expression}`);
+    await wait(25);
+  }
+}
+
+async function openPage(cdp, base, mode, viewport) {
+  const target = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  const attached = await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+  const sessionId = attached.sessionId;
+  await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
+  await cdp.send('Network.enable', {}, sessionId);
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: viewport.width,
+    height: viewport.height,
+    deviceScaleFactor: 1,
+    mobile: false,
+  }, sessionId);
+  await cdp.send('Page.navigate', { url: `${base}/?case=${mode}` }, sessionId);
+  await waitFor(cdp, sessionId, `document.documentElement?.dataset.qratorReady === 'true'`);
+  return sessionId;
+}
+
+test('startup I/O cannot block handlers or credential-free discovery', { timeout: 30_000 }, async (context) => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'qrator-ui-startup-'));
+  context.after(() => removeDisposableProfile(profile));
+  let server;
+  let cdp;
+
+  try {
+    server = await createMockServer();
+    const address = server.address();
+    const base = `http://127.0.0.1:${address.port}`;
+    cdp = new PipeCdp(profile);
+    const viewports = [
+      { width: 1920, height: 1080 },
+      { width: 1280, height: 720 },
+    ];
+    const modes = ['failed-status', 'non-json-status', 'slow-status', 'slow-library'];
+
+    for (const viewport of viewports) {
+      for (const mode of modes) {
+        const sessionId = await openPage(cdp, base, mode, viewport);
+
+        // Interact before either delayed startup response could finish.
+        const early = await evaluate(cdp, sessionId, `(() => {
+          const manualTab = [...document.querySelectorAll('.tab')].find((tab) => tab.dataset.view === 'manual');
+          manualTab.click();
+          const manualWorked = document.querySelector('#manual-view').classList.contains('active');
+          [...document.querySelectorAll('.tab')].find((tab) => tab.dataset.view === 'discover').click();
+          document.querySelector('#discover-query').value = 'Seed One\\nSeed Two';
+          let submitPrevented = null;
+          document.querySelector('#discover-form').addEventListener('submit', (event) => {
+            submitPrevented = event.defaultPrevented;
+          }, { once: true });
+          document.querySelector('#discover-button').click();
+          return {
+            manualWorked,
+            submitPrevented,
+            location: location.href,
+            buttonDisabled: document.querySelector('#discover-button').disabled,
+          };
+        })()`);
+
+        assert.equal(early.manualWorked, true, `${mode} ${viewport.width}: tabs should bind before startup I/O`);
+        assert.equal(early.submitPrevented, true, `${mode} ${viewport.width}: form submit should be intercepted`);
+        assert.equal(early.location, `${base}/?case=${mode}`, `${mode} ${viewport.width}: form must not navigate`);
+        assert.equal(early.buttonDisabled, true, `${mode} ${viewport.width}: credential-free discovery handler should run`);
+
+        if (mode === 'failed-status' || mode === 'non-json-status') {
+          await waitFor(cdp, sessionId, `document.querySelector('#status').textContent.includes('Credential-free ListenBrainz discovery ready')`);
+          const degraded = await evaluate(cdp, sessionId, `({
+            status: document.querySelector('#status').textContent,
+            library: document.querySelector('#library-output').textContent
+          })`);
+          assert.equal(
+            degraded.status,
+            'Spotify status unavailable / Credential-free ListenBrainz discovery ready',
+          );
+          assert.match(degraded.library, /Save a candidate explicitly/);
+        } else {
+          await waitFor(cdp, sessionId, `document.querySelector('#status').textContent.includes('Spotify credentials required')`);
+          const successfulStatus = await evaluate(cdp, sessionId, `document.querySelector('#status').textContent`);
+          assert.equal(successfulStatus, 'Spotify credentials required / ListenBrainz discovery ready');
+          if (mode === 'slow-library') {
+            await waitFor(cdp, sessionId, `document.querySelector('#library-output').textContent.includes('Save a candidate explicitly')`);
+          }
+        }
+      }
+    }
+
+    const outbound = cdp.events
+      .filter((event) => event.method === 'Network.requestWillBeSent')
+      .map((event) => event.params.request.url)
+      .filter((url) => /^https?:/.test(url))
+      .filter((url) => new URL(url).hostname !== '127.0.0.1');
+    assert.deepEqual(outbound, [], 'browser regression must not make non-loopback requests');
+  } finally {
+    try {
+      if (cdp) await cdp.close();
+    } finally {
+      try {
+        if (server) await new Promise((resolve) => server.close(resolve));
+      } finally {
+        await removeDisposableProfile(profile);
+      }
+    }
+  }
+});

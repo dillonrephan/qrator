@@ -36,9 +36,27 @@ Last updated: 2026-07-27
   every candidate identifier against the short-lived discovery run. Neutral
   candidates remain included; **Keep** is a priority/next-seed marker, not an
   exclusive-membership toggle.
+- Browser controls and default rendering initialize before status or archive
+  requests. Spotify status failures degrade visibly while credential-free
+  ListenBrainz discovery remains usable; slow status and archive reads do not
+  leave forms or tabs inert.
 - Disabled-by-default experimental ingestion of hydration metadata from an
   explicitly supplied public SoundCloud page. It is host-, redirect-, byte-,
   item-, and deadline-bounded and never calls `api-v2` or extracts a client ID.
+
+## Deferred UI audit evidence
+
+The synthetic browser audit on 2026-07-27 also reproduced two separate client
+defects that are intentionally outside the startup-resilience repair:
+
+- `.empty-state { display: grid; }` overrides the element's `hidden` state after
+  discovery, leaving a 594 px pre-run message above valid results at desktop
+  sizes.
+- Keep/Skip rerenders the whole discovery result and drops keyboard focus to the
+  document body.
+
+Both remain bounded follow-up work; neither was changed as part of the startup
+repair.
 
 ## Intentionally disabled
 

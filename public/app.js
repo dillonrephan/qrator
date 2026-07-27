@@ -7,8 +7,6 @@ let sessionDecisions = new Map();
 let savedTracks = [];
 let savedArchiveIds = new Set();
 
-await refreshStatus();
-await refreshLibrary();
 renderSelected();
 updateSeedCount();
 
@@ -69,6 +67,14 @@ $('#playlist-form').addEventListener('submit', async (event) => {
 
 $('#clear').addEventListener('click', () => { selected.clear(); renderSelected(); });
 $('#export-library').addEventListener('click', exportLibrary);
+
+document.documentElement.dataset.qratorReady = 'true';
+void refreshStatus().catch(() => {
+  $('#connection-dot').classList.remove('online');
+  $('#status').textContent = 'Spotify status unavailable / Credential-free ListenBrainz discovery ready';
+  $('#connect').textContent = 'Connect';
+});
+void refreshLibrary();
 
 async function refreshStatus() {
   const status = await api('/api/status');
