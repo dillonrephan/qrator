@@ -5,6 +5,10 @@ Last updated: 2026-07-27
 ## Working now
 
 - Keyless seed expansion through official ListenBrainz artist radio.
+- Explicit public ListenBrainz user shelves through one official six-month
+  top-recordings request. Inputs require an exact canonical profile URL; the
+  request is fixed to offset zero and at most 100 rows, and does not traverse
+  similar users.
 - Bulk recording hydration through ListenBrainz/MusicBrainz identifiers.
 - Platform-neutral review: candidates survive without a Spotify URI.
 - Clickable Spotify, MusicBrainz, YouTube-search, and SoundCloud-search routes.
@@ -64,3 +68,5 @@ Last updated: 2026-07-27
   (`QRATOR_DISCOVERY_DEADLINE_SECONDS`).
 - Experimental SoundCloud page reads: three redirects, 2 MiB, and 100 accepted
   tracks by default, with hard caps of three redirects, 4 MiB, and 200 tracks.
+- ListenBrainz public user shelves: exactly one `half_yearly` top-recordings
+  request at offset zero with a hard count of 100.

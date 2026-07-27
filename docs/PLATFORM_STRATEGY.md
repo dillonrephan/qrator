@@ -16,6 +16,21 @@ paths through shelves rather than predicting preference. Durable metadata crosse
 the session boundary only through an explicit per-track archive action and is
 never fed back into ranking. See [Memory Model](MEMORY_MODEL.md).
 
+### Credential-free ListenBrainz shelves
+
+An explicit canonical `https://listenbrainz.org/user/<username>` URL is a
+first-class, user-chosen shelf. QRator makes exactly one request to
+ListenBrainz's public user top-recordings statistics endpoint, fixed to the
+`half_yearly` range, offset zero, and a hard count of 100. Valid artist/title
+rows become candidates directly; a recording MBID is useful but not required.
+
+The user's raw listen count and selected time range are retained only as
+provenance metadata. Listen count does not add ranking weight. This source does
+not query MusicBrainz to fill missing identifiers, traverse similar users,
+recurse into other profiles, require a ListenBrainz token, or create a durable
+taste profile. A new profile is read only when its canonical URL is explicitly
+supplied.
+
 ## Objective
 
 QRator will use SoundCloud as its primary discovery surface, Last.fm as a

@@ -12,6 +12,11 @@ identity, and every result remains visible even when Spotify cannot resolve it.
 Spotify is a capped, strict resolver and explicit publishing target rather than
 the discovery engine.
 
+An explicitly supplied canonical ListenBrainz profile URL can also be treated
+as a trusted shelf. QRator reads one bounded page of that user's six-month top
+recordings without authentication; listen counts remain provenance metadata
+and do not become ranking weight.
+
 SoundCloud-first discovery and publishing remain the next supported provider
 integration, using SoundCloud's official OAuth API. A disabled-by-default,
 bounded experimental reader can ingest metadata embedded in an explicitly
@@ -70,6 +75,10 @@ python -m compileall -q music_harvester
   archive operation. Saved metadata is never used for ranking and can be
   inspected, exported, or individually removed.
 - Keyless artist discovery uses bounded ListenBrainz radio and bulk MusicBrainz metadata.
+- Canonical `https://listenbrainz.org/user/<username>` inputs read one official
+  top-recordings page: offset zero, `half_yearly`, and at most 100 rows. QRator
+  does not traverse similar users, hydrate missing MBIDs, or score raw listen
+  counts.
 - Unsupported Spotify HTML scraping and SoundCloud web-client credential extraction are disabled.
 - An opt-in experimental SoundCloud public-page reader uses only page hydration
   metadata and, for public profiles, SoundCloud's public recent-upload RSS feed:
@@ -110,6 +119,14 @@ For a useful no-key discovery run today:
 python -m music_harvester.main discover-from-seeds \
   --artists Björk "MF DOOM" "Boards of Canada" "Fela Kuti" \
   --length 20
+```
+
+To raid one explicitly chosen public ListenBrainz shelf without a key:
+
+```bash
+python -m music_harvester.main create-seeds \
+  --source-url "https://listenbrainz.org/user/example" \
+  --length 40
 ```
 
 To explicitly raid a public SoundCloud user, likes page, or playlist through

@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from music_harvester.db.store import Store
 from music_harvester.engine.explain import escape_md
@@ -12,6 +13,7 @@ from music_harvester.http import ApiError
 from music_harvester.models import RawTrack, SourceConfig
 from music_harvester.sources import SourceUnavailable, adapter_for
 from music_harvester.sources.lastfm import LastFmClient
+from music_harvester.sources.listenbrainz import listenbrainz_username
 
 
 BRIDGE_TITLE_WORDS = (
@@ -172,6 +174,17 @@ def bridge_queries(seeds: list[dict]) -> list[str]:
 
 
 def source_from_url(name: str, url: str, weight: float) -> SourceConfig | None:
+    hostname = (urlsplit(url).hostname or "").lower()
+    if "listenbrainz.org" in hostname:
+        listenbrainz_username(url)
+        return SourceConfig(
+            name=name,
+            platform="listenbrainz",
+            source_type="listenbrainz_user_top",
+            url=url,
+            weight=weight,
+            category="manual_urls",
+        )
     if "open.spotify.com/playlist" in url:
         return SourceConfig(name=name, platform="spotify", source_type="spotify_playlist", url=url, weight=weight, category="manual_urls")
     if "soundcloud.com" in url:
