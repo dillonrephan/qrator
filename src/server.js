@@ -311,8 +311,8 @@ async function createSoundcloudDiscoveryPlaylist(req, res) {
 }
 
 export async function publishSoundcloudCandidates({ name, candidates, isPublic = false }) {
-  if (!Array.isArray(candidates) || !candidates.length || candidates.length > 60) {
-    const error = new Error('SoundCloud publishing requires one to sixty reviewed candidates.');
+  if (!Array.isArray(candidates) || !candidates.length || candidates.length > 100) {
+    const error = new Error('SoundCloud publishing requires one to one hundred reviewed candidates.');
     error.status = 400;
     throw error;
   }
@@ -680,7 +680,7 @@ export function spotifyError(response, data) {
   return error;
 }
 
-async function soundcloudFetch(url, options = {}) {
+export async function soundcloudFetch(url, options = {}) {
   await assertProviderReady('soundcloud');
   const token = await getValidSoundcloudToken();
   const response = await fetch(url, {
@@ -695,7 +695,7 @@ async function soundcloudFetch(url, options = {}) {
   return data;
 }
 
-async function createSoundcloudPlaylist({ name, description, sharing, trackUrns }) {
+export async function createSoundcloudPlaylist({ name, description, sharing, trackUrns }) {
   return soundcloudFetch('https://api.soundcloud.com/playlists', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
