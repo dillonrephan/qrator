@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const tokenPath = path.join(root, '.spotify-token.json');
+const soundcloudTokenPath = path.join(root, '.soundcloud-token.json');
 const stateDir = path.join(root, 'data');
 const savedTracksPath = path.join(stateDir, 'saved-tracks.json');
 const runFile = promisify(execFile);
@@ -28,6 +29,9 @@ const config = {
   lastfmApiKey: process.env.LASTFM_API_KEY,
   redirectUri: process.env.SPOTIFY_REDIRECT_URI || 'http://127.0.0.1:8787/callback',
   port: Number(process.env.PORT || 8787),
+  soundcloudClientId: process.env.SOUNDCLOUD_CLIENT_ID,
+  soundcloudClientSecret: process.env.SOUNDCLOUD_CLIENT_SECRET,
+  soundcloudRedirectUri: process.env.SOUNDCLOUD_REDIRECT_URI || 'http://127.0.0.1:8787/soundcloud/callback',
 };
 
 const scopes = [
@@ -38,6 +42,7 @@ const scopes = [
 ].join(' ');
 
 const pendingStates = new Map();
+const pendingSoundcloudStates = new Map();
 const discoveryRuns = new Map();
 let libraryWrite = Promise.resolve();
 
@@ -61,14 +66,18 @@ async function handleRequest(req, res) {
     if (req.method === 'GET' && url.pathname === '/styles.css') return sendFile(res, 'styles.css', 'text/css; charset=utf-8');
     if (req.method === 'GET' && url.pathname === '/login') return startLogin(res);
     if (req.method === 'GET' && url.pathname === '/callback') return handleCallback(url, res);
+    if (req.method === 'GET' && url.pathname === '/soundcloud/login') return startSoundcloudLogin(res);
+    if (req.method === 'GET' && url.pathname === '/soundcloud/callback') return handleSoundcloudCallback(url, res);
     if (req.method === 'GET' && url.pathname === '/api/status') {
       return json(res, 200, {
         configured: Boolean(config.clientId && config.clientSecret),
         authenticated: existsSync(tokenPath),
         lastfmConfigured: Boolean(config.lastfmApiKey),
         listenbrainzAvailable: true,
-        soundcloudConfigured: Boolean(process.env.SOUNDCLOUD_CLIENT_ID && process.env.SOUNDCLOUD_CLIENT_SECRET),
+        soundcloudConfigured: Boolean(config.soundcloudClientId && config.soundcloudClientSecret),
+        soundcloudAuthenticated: existsSync(soundcloudTokenPath),
         redirectUri: config.redirectUri,
+        soundcloudRedirectUri: config.soundcloudRedirectUri,
       });
     }
     if (req.method === 'GET' && url.pathname === '/api/me') return spotifyProxy(res, 'https://api.spotify.com/v1/me');
@@ -93,8 +102,10 @@ async function handleRequest(req, res) {
       return spotifyProxy(res, searchUrl);
     }
     if (req.method === 'POST' && url.pathname === '/api/playlists') return createPlaylist(req, res);
+    if (req.method === 'GET' && url.pathname === '/api/soundcloud/search') return soundcloudSearch(url, res);
     if (req.method === 'POST' && url.pathname === '/api/discover') return discover(req, res);
     if (req.method === 'POST' && url.pathname === '/api/discover/playlist') return createDiscoveryPlaylist(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/discover/soundcloud-playlist') return createSoundcloudDiscoveryPlaylist(req, res);
     return json(res, 404, { error: 'Not found.' });
   } catch (error) {
     console.error(error);
@@ -102,6 +113,42 @@ async function handleRequest(req, res) {
       error: error.expose === false ? 'Unexpected error.' : error.message || 'Unexpected error.',
     });
   }
+}
+
+function startSoundcloudLogin(res) {
+  if (!config.soundcloudClientId || !config.soundcloudClientSecret) {
+    return html(res, 500, page('Missing SoundCloud credentials', '<p>Add SoundCloud client credentials to <code>.env</code>, then restart QRator.</p>'));
+  }
+  pruneStates();
+  const state = crypto.randomBytes(24).toString('base64url');
+  const verifier = crypto.randomBytes(48).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  pendingSoundcloudStates.set(state, { createdAt: Date.now(), verifier });
+  const authUrl = new URL('https://secure.soundcloud.com/authorize');
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', config.soundcloudClientId);
+  authUrl.searchParams.set('redirect_uri', config.soundcloudRedirectUri);
+  authUrl.searchParams.set('code_challenge', challenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('state', state);
+  res.writeHead(302, { Location: authUrl.toString() });
+  res.end();
+}
+
+async function handleSoundcloudCallback(url, res) {
+  const oauthError = url.searchParams.get('error');
+  if (oauthError) return html(res, 400, page('SoundCloud denied access', `<p>${escapeHtml(oauthError)}</p>`));
+  pruneStates();
+  const state = url.searchParams.get('state');
+  const code = url.searchParams.get('code');
+  const pending = state ? pendingSoundcloudStates.get(state) : null;
+  if (!pending || !code) return html(res, 400, page('Invalid callback', '<p>The SoundCloud authorization request expired or was invalid.</p>'));
+  pendingSoundcloudStates.delete(state);
+  const token = await requestSoundcloudToken({
+    grant_type: 'authorization_code', code, redirect_uri: config.soundcloudRedirectUri, code_verifier: pending.verifier,
+  });
+  await saveSoundcloudToken(token);
+  return html(res, 200, page('SoundCloud connected', '<p>Authorization is complete. QRator can now resolve and publish SoundCloud tracks.</p><p><a href="/">Return to QRator</a></p>'));
 }
 
 function loadEnv(filePath) {
@@ -240,6 +287,50 @@ async function createDiscoveryPlaylist(req, res) {
   return json(res, 201, { playlist, added: uris.length, unresolved: selectedItems.length - uris.length });
 }
 
+async function soundcloudSearch(url, res) {
+  const query = cleanText(url.searchParams.get('q'), 500);
+  if (!query) return json(res, 400, { error: 'Missing SoundCloud search query.' });
+  const searchUrl = new URL('https://api.soundcloud.com/tracks');
+  searchUrl.searchParams.set('q', query);
+  searchUrl.searchParams.set('limit', '10');
+  searchUrl.searchParams.set('access', 'playable,preview');
+  const data = await soundcloudFetch(searchUrl);
+  const tracks = Array.isArray(data) ? data : data.collection || [];
+  return json(res, 200, { tracks: tracks.map(publicSoundcloudTrack).filter(Boolean) });
+}
+
+async function createSoundcloudDiscoveryPlaylist(req, res) {
+  const body = await readJson(req);
+  pruneRuns();
+  const run = discoveryRuns.get(String(body.runId || ''));
+  if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before publishing.' });
+  const selectedItems = selectRunItems(run.items, body.archiveIds);
+  const name = cleanText(body.name, 100) || `QRator discovery ${new Date().toISOString().slice(0, 10)}`;
+  const isPublic = Boolean(body.public);
+  const resolved = [];
+  const unresolved = [];
+  for (const candidate of selectedItems) {
+    const track = await resolveSoundcloudCandidate(candidate);
+    if (track) resolved.push(track);
+    else unresolved.push({ artist: cleanText(candidate.artist, 300), title: cleanText(candidate.title, 500) });
+  }
+  if (!resolved.length) return json(res, 422, {
+    error: 'QRator could not strictly resolve any selected tracks on SoundCloud. Nothing was created.', unresolved,
+  });
+  const playlist = await createSoundcloudPlaylist({
+    name,
+    description: 'Discovered and reviewed with QRator.',
+    sharing: isPublic ? 'public' : 'private',
+    trackUrns: resolved.map((track) => track.urn),
+  });
+  return json(res, 201, {
+    playlist: publicSoundcloudPlaylist(playlist),
+    added: resolved.length,
+    unresolved: unresolved.length,
+    unresolvedTracks: unresolved,
+  });
+}
+
 async function archiveCandidate(req, res) {
   const body = await readJson(req);
   pruneRuns();
@@ -356,6 +447,68 @@ function cleanText(value, max) { return String(value || '').trim().slice(0, max)
 function validSpotifyUris(value) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((uri) => /^spotify:track:[A-Za-z0-9]+$/.test(String(uri))))];
+}
+
+function normalizedMatchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\b(feat(?:uring)?|ft)\.?\b.*$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function titleVariants(title, artist) {
+  const normalizedTitle = normalizedMatchText(title);
+  const normalizedArtist = normalizedMatchText(artist);
+  return new Set([
+    normalizedTitle,
+    normalizedTitle.replace(new RegExp(`^${escapeRegex(normalizedArtist)}\\s+`), '').trim(),
+  ].filter(Boolean));
+}
+
+function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+export function isStrictSoundcloudMatch(candidate, track) {
+  const targetArtist = normalizedMatchText(candidate.artist);
+  const targetTitles = titleVariants(candidate.title, candidate.artist);
+  const resultArtist = normalizedMatchText(track.metadata_artist || track.user?.username || '');
+  const resultTitle = normalizedMatchText(track.title);
+  if (!targetArtist || !targetTitles.size || !resultTitle) return false;
+  const titleMatches = [...targetTitles].some((title) => resultTitle === title || resultTitle === `${targetArtist} ${title}`);
+  if (!titleMatches) return false;
+  if (resultArtist === targetArtist || resultTitle.startsWith(`${targetArtist} `)) return true;
+  return resultArtist.includes(targetArtist) || targetArtist.includes(resultArtist);
+}
+
+async function resolveSoundcloudCandidate(candidate) {
+  const query = cleanText(`${candidate.artist} ${candidate.title}`, 500);
+  if (!query) return null;
+  const searchUrl = new URL('https://api.soundcloud.com/tracks');
+  searchUrl.searchParams.set('q', query);
+  searchUrl.searchParams.set('limit', '25');
+  searchUrl.searchParams.set('access', 'playable,preview');
+  const data = await soundcloudFetch(searchUrl);
+  const tracks = Array.isArray(data) ? data : data.collection || [];
+  return tracks.find((track) => typeof track?.urn === 'string' && isStrictSoundcloudMatch(candidate, track)) || null;
+}
+
+function publicSoundcloudTrack(track) {
+  if (!track || typeof track.urn !== 'string' || !safeExternalUrl(track.permalink_url, 'soundcloud.com')) return null;
+  return {
+    urn: track.urn,
+    title: cleanText(track.title, 500),
+    artist: cleanText(track.metadata_artist || track.user?.username, 300),
+    permalink_url: safeExternalUrl(track.permalink_url, 'soundcloud.com'),
+    duration: Number(track.duration) || null,
+  };
+}
+
+function publicSoundcloudPlaylist(playlist) {
+  const permalinkUrl = safeExternalUrl(playlist?.permalink_url, 'soundcloud.com');
+  if (!permalinkUrl) throw new Error('SoundCloud created a playlist without a safe public URL.');
+  return { urn: cleanText(playlist.urn, 200), permalink_url: permalinkUrl, sharing: playlist.sharing === 'public' ? 'public' : 'private' };
 }
 
 async function runPython(args, cwd) {
@@ -515,6 +668,36 @@ export function spotifyError(response, data) {
   return error;
 }
 
+async function soundcloudFetch(url, options = {}) {
+  await assertProviderReady('soundcloud');
+  const token = await getValidSoundcloudToken();
+  const response = await fetch(url, {
+    ...options,
+    headers: { Authorization: `OAuth ${token.access_token}`, Accept: 'application/json', ...(options.headers || {}) },
+  });
+  const text = await response.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { error: { message: text } }; }
+  if (response.status === 429) await saveProviderCooldown('soundcloud', retryAfterSeconds(response.headers.get('retry-after')));
+  if (!response.ok) throw soundcloudError(response, data);
+  return data;
+}
+
+async function createSoundcloudPlaylist({ name, description, sharing, trackUrns }) {
+  return soundcloudFetch('https://api.soundcloud.com/playlists', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ playlist: { title: name, description, sharing, tracks: trackUrns.map((urn) => ({ urn })) } }),
+  });
+}
+
+export function soundcloudError(response, data) {
+  const message = data.error?.message || data.message || data.error_description || `SoundCloud API failed with ${response.status}`;
+  const error = new Error(message);
+  error.status = response.status;
+  return error;
+}
+
 async function getValidToken() {
   if (!existsSync(tokenPath)) throw new Error('Spotify is not connected yet.');
   const token = JSON.parse(await readFile(tokenPath, 'utf8'));
@@ -542,6 +725,39 @@ async function requestToken(params) {
 
 async function saveToken(token) {
   await writeFile(tokenPath, JSON.stringify({ ...token, expires_at: Date.now() + Number(token.expires_in || 3600) * 1000 }, null, 2), { mode: 0o600 });
+}
+
+async function getValidSoundcloudToken() {
+  if (!existsSync(soundcloudTokenPath)) throw new Error('SoundCloud is not connected yet. Use Connect SoundCloud first.');
+  const token = JSON.parse(await readFile(soundcloudTokenPath, 'utf8'));
+  if (Date.now() < token.expires_at - 60_000) return token;
+  if (!token.refresh_token) throw new Error('SoundCloud authorization expired. Connect SoundCloud again.');
+  const refreshed = await requestSoundcloudToken({
+    grant_type: 'refresh_token', refresh_token: token.refresh_token, redirect_uri: config.soundcloudRedirectUri,
+  });
+  const merged = { ...token, ...refreshed, refresh_token: refreshed.refresh_token || token.refresh_token };
+  await saveSoundcloudToken(merged);
+  return merged;
+}
+
+async function requestSoundcloudToken(params) {
+  if (!config.soundcloudClientId || !config.soundcloudClientSecret) throw new Error('SoundCloud client credentials are missing.');
+  const response = await fetch('https://secure.soundcloud.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ ...params, client_id: config.soundcloudClientId, client_secret: config.soundcloudClientSecret }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error_description || data.error || `SoundCloud token request failed with ${response.status}`);
+  return data;
+}
+
+async function saveSoundcloudToken(token) {
+  const destination = soundcloudTokenPath;
+  const temporary = `${destination}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  await writeFile(temporary, JSON.stringify({ ...token, expires_at: Date.now() + Number(token.expires_in || 3600) * 1000 }, null, 2), { mode: 0o600 });
+  await chmod(temporary, 0o600);
+  await rename(temporary, destination);
 }
 
 export async function readJson(req) {
@@ -578,5 +794,9 @@ function setSecurityHeaders(res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
 }
-function pruneStates() { const cutoff = Date.now() - STATE_TTL_MS; for (const [key, created] of pendingStates) if (created < cutoff) pendingStates.delete(key); }
+function pruneStates() {
+  const cutoff = Date.now() - STATE_TTL_MS;
+  for (const [key, created] of pendingStates) if (created < cutoff) pendingStates.delete(key);
+  for (const [key, pending] of pendingSoundcloudStates) if (pending.createdAt < cutoff) pendingSoundcloudStates.delete(key);
+}
 function pruneRuns() { const cutoff = Date.now() - RUN_TTL_MS; for (const [key, run] of discoveryRuns) if (run.createdAt < cutoff) discoveryRuns.delete(key); }

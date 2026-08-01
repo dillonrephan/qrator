@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .spotify-token.json
+.soundcloud-token.json
 *.pem
 *.key
 

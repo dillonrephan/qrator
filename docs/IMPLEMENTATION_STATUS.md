@@ -1,6 +1,6 @@
 # QRator Implementation Status
 
-Last updated: 2026-07-27
+Last updated: 2026-08-01
 
 ## Working now
 
@@ -46,6 +46,14 @@ Last updated: 2026-07-27
 - Disabled-by-default experimental ingestion of hydration metadata from an
   explicitly supplied public SoundCloud page. It is host-, redirect-, byte-,
   item-, and deadline-bounded and never calls `api-v2` or extracts a client ID.
+- Official SoundCloud OAuth 2.1 Authorization Code + PKCE connection for the
+  local user, with ten-minute single-use state, PKCE verifier, atomic
+  owner-only token storage, and refresh-token rotation.
+- Official SoundCloud search and explicit playlist publishing using the current
+  string-URN API contract. QRator resolves every selected candidate first,
+  rejects non-exact artist/title results, and refuses to create an empty
+  playlist. A SoundCloud publish may be private or public by the explicit GUI
+  toggle; unresolved tracks are reported rather than substituted.
 
 ## Deferred UI audit evidence
 
@@ -71,8 +79,8 @@ is fixed. The focus defect remains bounded follow-up work and was not changed.
 1. Finish versioned backfill/validation for existing long-lived databases.
 2. Add official SoundCloud client-credentials reads with string URNs, bounded
    pagination, and capability diagnostics.
-3. Add SoundCloud user OAuth, strict resolution, and a private three-track publish
-   canary.
+3. Run and document the first private three-track SoundCloud publish canary,
+   then add playlist/profile hydration with bounded pagination.
 4. Add first-class shelf identifiers, then implement session-only “raid this
    shelf deeper” without conflating shelves with individual track seeds.
 5. Add an opt-in persistent judgment store only after its inspect/export/erase

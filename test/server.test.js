@@ -7,6 +7,7 @@ import path from 'node:path';
 
 import {
   candidateArchiveId,
+  isStrictSoundcloudMatch,
   metadataSnapshot,
   parseDiscoveryInput,
   parseLength,
@@ -16,6 +17,22 @@ import {
   spotifyError,
   writeSavedTracks,
 } from '../src/server.js';
+
+test('SoundCloud resolution requires the same artist and recording title', () => {
+  const candidate = { artist: 'Nina Simone', title: 'Sinnerman' };
+  assert.equal(isStrictSoundcloudMatch(candidate, {
+    title: 'Sinnerman', metadata_artist: 'Nina Simone', urn: 'soundcloud:tracks:1',
+  }), true);
+  assert.equal(isStrictSoundcloudMatch(candidate, {
+    title: 'Sinnerman (Live Remix)', metadata_artist: 'Nina Simone', urn: 'soundcloud:tracks:2',
+  }), false);
+  assert.equal(isStrictSoundcloudMatch(candidate, {
+    title: 'Sinnerman', metadata_artist: 'Another Artist', urn: 'soundcloud:tracks:3',
+  }), false);
+  assert.equal(isStrictSoundcloudMatch(candidate, {
+    title: 'Nina Simone - Sinnerman', user: { username: 'archive channel' }, urn: 'soundcloud:tracks:4',
+  }), true);
+});
 
 test('parses track seeds and source URLs without mixing them', () => {
   const result = parseDiscoveryInput([

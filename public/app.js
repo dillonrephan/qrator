@@ -72,17 +72,20 @@ document.documentElement.dataset.qratorReady = 'true';
 void refreshStatus().catch(() => {
   $('#connection-dot').classList.remove('online');
   $('#status').textContent = 'Spotify status unavailable / Credential-free ListenBrainz discovery ready';
-  $('#connect').textContent = 'Connect';
+  $('#connect').textContent = 'Connect Spotify';
+  $('#connect-soundcloud').textContent = 'Connect SoundCloud';
 });
 void refreshLibrary();
 
 async function refreshStatus() {
   const status = await api('/api/status');
-  $('#connection-dot').classList.toggle('online', status.authenticated);
+  $('#connection-dot').classList.toggle('online', status.authenticated || status.soundcloudAuthenticated);
   const spotify = status.authenticated ? 'Spotify connected' : status.configured ? 'Spotify ready' : 'Spotify credentials required';
+  const soundcloud = status.soundcloudAuthenticated ? 'SoundCloud connected' : status.soundcloudConfigured ? 'SoundCloud ready' : 'SoundCloud credentials required';
   const discovery = status.lastfmConfigured ? 'ListenBrainz + Last.fm discovery' : 'ListenBrainz discovery ready';
-  $('#status').textContent = `${spotify} / ${discovery}`;
-  $('#connect').textContent = status.authenticated ? 'Reconnect' : 'Connect';
+  $('#status').textContent = `${spotify} / ${soundcloud} / ${discovery}`;
+  $('#connect').textContent = status.authenticated ? 'Reconnect Spotify' : 'Connect Spotify';
+  $('#connect-soundcloud').textContent = status.soundcloudAuthenticated ? 'Reconnect SoundCloud' : 'Connect SoundCloud';
 }
 
 async function runDiscovery(payload) {
@@ -131,7 +134,7 @@ function renderDiscovery(data) {
     }));
     actions.append(expand);
   }
-  if (publishItems().some((item) => item.spotify_uri)) {
+  if (publishItems().some((item) => item.spotify_uri || item.soundcloud_url || item.artist)) {
     actions.append(button('Publish to Spotify', 'primary', openPublish));
   }
   const memoryNote = document.createElement('small');
@@ -367,11 +370,32 @@ function openPublish() {
   output.querySelector('.publish-bar')?.remove();
   const form = document.createElement('form');
   form.className = 'publish-bar';
-  const selectedCount = publishItems().filter((item) => item.spotify_uri).length;
-  form.innerHTML = `<label><span>Playlist name</span><input name="name" maxlength="100" value="QRator discovery"></label><label class="toggle-row compact"><span><strong>Public</strong></span><input name="public" type="checkbox"></label><button class="primary" type="submit">Publish ${selectedCount} Spotify-ready</button><span class="publish-result"></span>`;
+  const spotifyCount = publishItems().filter((item) => item.spotify_uri).length;
+  const soundcloudCount = publishItems().length;
+  form.innerHTML = `<label><span>Playlist name</span><input name="name" maxlength="100" value="QRator discovery"></label><label class="toggle-row compact"><span><strong>Public</strong></span><input name="public" type="checkbox"></label><button class="primary" type="submit">Publish ${spotifyCount} Spotify-ready</button><button class="secondary soundcloud-publish" type="button">Resolve & publish ${soundcloudCount} to SoundCloud</button><span class="publish-result"></span>`;
   form.addEventListener('submit', publishDiscovery);
+  form.querySelector('.soundcloud-publish').addEventListener('click', publishSoundcloudDiscovery);
   output.prepend(form);
   form.elements.name.focus();
+}
+
+async function publishSoundcloudDiscovery(event) {
+  const form = event.currentTarget.closest('form');
+  const result = form.querySelector('.publish-result');
+  setBusy(event.currentTarget, true, 'Resolving SoundCloud');
+  try {
+    const data = await api('/api/discover/soundcloud-playlist', {
+      method: 'POST',
+      body: JSON.stringify({
+        runId: currentRun,
+        name: form.elements.name.value,
+        public: form.elements.public.checked,
+        archiveIds: publishItems().map((item) => item.archive_id),
+      }),
+    });
+    renderSpotifyLink(result, data.playlist.permalink_url, `Open SoundCloud playlist (${data.added}; ${data.unresolved} unresolved)`);
+  } catch (error) { showText(result, error.message, 'error'); }
+  finally { setBusy(event.currentTarget, false); }
 }
 
 async function publishDiscovery(event) {

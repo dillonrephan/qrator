@@ -110,8 +110,12 @@ OpenAPI playlist-track payload contract in a private three-track canary before
 enabling publishing. It will use URNs only where the API accepts them and will
 never silently derive or retain deprecated numeric IDs.
 
-Publishing is disabled until user OAuth, token rotation, strict SoundCloud
-matching, and publish-state recovery are implemented and tested.
+The first user-facing publishing path is now implemented: local OAuth 2.1 PKCE,
+owner-only token storage, exact artist/title resolution to string URNs, and
+explicit private/public playlist creation. Discovery remains platform-neutral;
+SoundCloud resolution happens only at explicit publish time. The first private
+three-track canary remains the next live verification step before expanding
+user shelf traversal.
 
 References:
 
