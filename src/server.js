@@ -306,29 +306,41 @@ async function createSoundcloudDiscoveryPlaylist(req, res) {
   if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before publishing.' });
   const selectedItems = selectRunItems(run.items, body.archiveIds);
   const name = cleanText(body.name, 100) || `QRator discovery ${new Date().toISOString().slice(0, 10)}`;
-  const isPublic = Boolean(body.public);
+  const result = await publishSoundcloudCandidates({ name, candidates: selectedItems, isPublic: Boolean(body.public) });
+  return json(res, 201, result);
+}
+
+export async function publishSoundcloudCandidates({ name, candidates, isPublic = false }) {
+  if (!Array.isArray(candidates) || !candidates.length || candidates.length > 60) {
+    const error = new Error('SoundCloud publishing requires one to sixty reviewed candidates.');
+    error.status = 400;
+    throw error;
+  }
   const resolved = [];
   const unresolved = [];
-  for (const candidate of selectedItems) {
+  for (const candidate of candidates) {
     const track = await resolveSoundcloudCandidate(candidate);
     if (track) resolved.push(track);
     else unresolved.push({ artist: cleanText(candidate.artist, 300), title: cleanText(candidate.title, 500) });
   }
-  if (!resolved.length) return json(res, 422, {
-    error: 'QRator could not strictly resolve any selected tracks on SoundCloud. Nothing was created.', unresolved,
-  });
+  if (!resolved.length) {
+    const error = new Error('QRator could not strictly resolve any selected tracks on SoundCloud. Nothing was created.');
+    error.status = 422;
+    error.unresolved = unresolved;
+    throw error;
+  }
   const playlist = await createSoundcloudPlaylist({
     name,
     description: 'Discovered and reviewed with QRator.',
     sharing: isPublic ? 'public' : 'private',
     trackUrns: resolved.map((track) => track.urn),
   });
-  return json(res, 201, {
+  return {
     playlist: publicSoundcloudPlaylist(playlist),
     added: resolved.length,
     unresolved: unresolved.length,
     unresolvedTracks: unresolved,
-  });
+  };
 }
 
 async function archiveCandidate(req, res) {
