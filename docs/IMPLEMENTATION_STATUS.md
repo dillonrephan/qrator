@@ -66,6 +66,17 @@ defect that remains intentionally deferred:
 The CSS cascade defect that left the empty state above valid discovery results
 is fixed. The focus defect remains bounded follow-up work and was not changed.
 
+## SoundCloud publish canary — 2026-08-01
+
+QRator completed the first live private publish canary through the documented
+SoundCloud API. The local PKCE connection resolved and created a three-track
+playlist from Nina Simone — *Sinnerman*, The Notorious B.I.G. — *Juicy*, and A
+Tribe Called Quest — *Electric Relaxation*. All three were resolved to
+SoundCloud string URNs by strict matching and accepted by `POST /playlists`;
+there were zero unresolved candidates and no fallback substitutions. The
+private playlist URL and OAuth credentials remain local runtime state and are
+not recorded here.
+
 ## Intentionally disabled
 
 - Spotify public-playlist HTML scraping.
