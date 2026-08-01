@@ -494,7 +494,7 @@ export function isStrictSoundcloudMatch(candidate, track) {
   return resultArtist.includes(targetArtist) || targetArtist.includes(resultArtist);
 }
 
-async function resolveSoundcloudCandidate(candidate) {
+export async function resolveSoundcloudCandidate(candidate) {
   const query = cleanText(`${candidate.artist} ${candidate.title}`, 500);
   if (!query) return null;
   const searchUrl = new URL('https://api.soundcloud.com/tracks');
