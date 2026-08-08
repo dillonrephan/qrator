@@ -1,8 +1,16 @@
 # QRator Implementation Status
 
-Last updated: 2026-08-04
+Last updated: 2026-08-08
 
 ## Working now
+
+- Explicit local-audio perception. A bounded, symlink-refusing file or directory
+  analyzer hashes each recording and emits deterministic waveform evidence,
+  structural pressure arcs, labeled heuristics, and batch-relative comparisons.
+  An isolated optional CLAP runtime adds independently normalized semantic axes
+  and 512-dimensional opening/quarter/peak/ending embeddings on CPU. Audio is
+  never uploaded, model judgment remains distinct from measurement, and neither
+  layer silently becomes a permanent user taste profile.
 
 - SoundCloud-first seed expansion through actual public user curation. QRator
   resolves two to twenty shortlist tracks, samples up to 1,000 likers per

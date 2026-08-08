@@ -30,6 +30,10 @@ additive fallback for explicitly provided public SoundCloud pages. See
 ephemeral behavior and explicit archive boundary are documented in
 [Memory Model](docs/MEMORY_MODEL.md).
 
+QRator also has a local-first waveform and semantic perception instrument for
+explicitly authorized audio. It does not upload recordings or silently infer a
+durable taste profile. See [Local Audio Perception](docs/AUDIO_PERCEPTION.md).
+
 ## Setup
 
 Create a Spotify Developer application with this redirect URI:

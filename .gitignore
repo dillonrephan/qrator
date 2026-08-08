@@ -17,6 +17,7 @@ output/
 
 # JavaScript dependencies and reports
 node_modules/
+audio-semantic/.cache/
 coverage/
 
 # Python environments, caches, and build output
