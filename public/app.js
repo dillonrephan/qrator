@@ -4,8 +4,9 @@ let currentRun = null;
 let currentItems = [];
 let currentDiscoveryData = null;
 let sessionDecisions = new Map();
-let savedTracks = [];
-let savedArchiveIds = new Set();
+let tasteProfile = { summary: { total: 0, kept: 0, skipped: 0, artists: [], sources: [] }, judgments: [] };
+let activePlaybackItem = null;
+let playerRequestId = 0;
 
 renderSelected();
 updateSeedCount();
@@ -13,7 +14,7 @@ updateSeedCount();
 document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
   document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === `${tab.dataset.view}-view`));
-  if (tab.dataset.view === 'library') refreshLibrary();
+  if (tab.dataset.view === 'profile') refreshProfile();
 }));
 
 $('#discover-query').addEventListener('input', (event) => {
@@ -25,7 +26,7 @@ $('#discover-form').addEventListener('submit', async (event) => {
   await runDiscovery({
     query: $('#discover-query').value.trim(),
     length: Number($('#playlist-length').value),
-    mode: 'distill',
+    mode: 'auto',
     thorough: $('#source-thorough').checked,
   });
 });
@@ -66,30 +67,38 @@ $('#playlist-form').addEventListener('submit', async (event) => {
 });
 
 $('#clear').addEventListener('click', () => { selected.clear(); renderSelected(); });
-$('#export-library').addEventListener('click', exportLibrary);
+$('#export-profile').addEventListener('click', exportProfile);
+$('#erase-profile').addEventListener('click', eraseProfile);
+$('#player-close').addEventListener('click', closePlayer);
+$('#player-fallback').addEventListener('click', () => {
+  if (activePlaybackItem) void loadPlayback(activePlaybackItem, 'spotify');
+});
 
 document.documentElement.dataset.qratorReady = 'true';
 void refreshStatus().catch(() => {
   $('#connection-dot').classList.remove('online');
-  $('#status').textContent = 'Spotify status unavailable / Credential-free ListenBrainz discovery ready';
+  $('#status').textContent = 'Provider status unavailable / SoundCloud user-shelf discovery status unknown';
   $('#connect').textContent = 'Connect Spotify';
   $('#connect-soundcloud').textContent = 'Connect SoundCloud';
 });
-void refreshLibrary();
+void refreshProfile();
 
 async function refreshStatus() {
   const status = await api('/api/status');
   $('#connection-dot').classList.toggle('online', status.authenticated || status.soundcloudAuthenticated);
   const spotify = status.authenticated ? 'Spotify connected' : status.configured ? 'Spotify ready' : 'Spotify credentials required';
   const soundcloud = status.soundcloudAuthenticated ? 'SoundCloud connected' : status.soundcloudConfigured ? 'SoundCloud ready' : 'SoundCloud credentials required';
-  const discovery = status.lastfmConfigured ? 'ListenBrainz + Last.fm discovery' : 'ListenBrainz discovery ready';
+  const discovery = status.soundcloudAuthenticated
+    ? 'User likes + playlist discovery ready'
+    : 'Connect SoundCloud for user-shelf discovery';
   $('#status').textContent = `${spotify} / ${soundcloud} / ${discovery}`;
   $('#connect').textContent = status.authenticated ? 'Reconnect Spotify' : 'Connect Spotify';
   $('#connect-soundcloud').textContent = status.soundcloudAuthenticated ? 'Reconnect SoundCloud' : 'Connect SoundCloud';
 }
 
-async function runDiscovery(payload) {
+async function runDiscovery(payload, { playFirst = false } = {}) {
   if (!payload.query) return;
+  closePlayer();
   const button = $('#discover-button');
   setBusy(button, true, payload.mode === 'discover' ? 'Expanding' : 'Curating');
   $('#discover-empty').hidden = true;
@@ -102,8 +111,9 @@ async function runDiscovery(payload) {
     currentRun = data.runId;
     currentItems = data.items || [];
     currentDiscoveryData = data;
-    sessionDecisions = new Map();
+    sessionDecisions = new Map(currentItems.filter((item) => item.taste_preference).map((item) => [item.archive_id, item.taste_preference]));
     renderDiscovery(data);
+    if (playFirst && currentItems.length) await loadPlayback(currentItems[0]);
   } catch (error) {
     currentRun = null;
     currentItems = [];
@@ -134,12 +144,15 @@ function renderDiscovery(data) {
     }));
     actions.append(expand);
   }
-  if (publishItems().some((item) => item.spotify_uri || item.soundcloud_url || item.artist)) {
-    actions.append(button('Publish to Spotify', 'primary', openPublish));
+  if (publishItems().some((item) => item.artist && item.title)) {
+    actions.append(button('Publish to SoundCloud', 'primary', () => openPublish('soundcloud')));
+  }
+  if (publishItems().some((item) => item.spotify_uri)) {
+    actions.append(button('Publish to Spotify', 'secondary', () => openPublish('spotify')));
   }
   const memoryNote = document.createElement('small');
   memoryNote.className = 'session-note';
-  memoryNote.textContent = 'Keep and skip live only in this tab and reset with the next run.';
+  memoryNote.textContent = 'Your judgments are saved locally and shape the order of future discoveries.';
   actions.append(memoryNote);
 
   const output = $('#discover-output');
@@ -176,8 +189,8 @@ function renderDiscoveryStats(data) {
     `<span>${data.resolved} Spotify-ready</span>`,
     `<span>${data.total - data.resolved} catalog-only</span>`,
   ];
-  if (kept) parts.push(`<span>${kept} kept</span>`);
-  if (skipped) parts.push(`<span>${skipped} skipped</span>`);
+  if (kept) parts.push(`<span>${kept} more like this</span>`);
+  if (skipped) parts.push(`<span>${skipped} less like this</span>`);
   $('#result-stats').innerHTML = parts.join('');
 }
 
@@ -196,6 +209,9 @@ function renderCandidate(item, index) {
   artist.textContent = [item.artist, item.album].filter(Boolean).join(' — ');
   const why = document.createElement('small');
   why.textContent = item.why;
+  const tasteWhy = document.createElement('small');
+  tasteWhy.className = 'taste-reason';
+  tasteWhy.textContent = item.taste_reasons?.length ? `Taste profile: ${item.taste_reasons.join('; ')}.` : '';
   const evidence = document.createElement('div');
   evidence.className = 'candidate-evidence';
   evidence.append(
@@ -203,6 +219,7 @@ function renderCandidate(item, index) {
     metric(item.discovery_distance, 'distance'),
     metric(`${item.recording_confidence.toFixed(1)}`, 'recording confidence'),
   );
+  if (item.taste_adjustment) evidence.append(metric(`${item.taste_adjustment > 0 ? '+' : ''}${item.taste_adjustment.toFixed(1)}`, 'taste influence'));
   const links = document.createElement('div');
   links.className = 'candidate-links';
   if (item.spotify_uri) links.append(externalLink(`https://open.spotify.com/track/${item.spotify_uri.split(':').at(-1)}`, 'Spotify'));
@@ -213,35 +230,79 @@ function renderCandidate(item, index) {
   links.append(externalLink(`https://soundcloud.com/search/sounds?q=${query}`, 'SoundCloud search'));
   const review = document.createElement('div');
   review.className = 'candidate-review';
+  const play = button('Play here', 'review-button play-button', (event) => loadPlayback(item, 'soundcloud', event.currentTarget));
+  play.title = 'Load the SoundCloud player first, with Spotify as fallback.';
   const keep = button(
-    decision === 'keep' ? 'Kept for this mix' : 'Keep for this mix',
+    decision === 'keep' ? 'More like me' : 'More like this',
     decision === 'keep' ? 'review-button active-keep' : 'review-button',
-    () => setSessionDecision(item.archive_id, decision === 'keep' ? null : 'keep'),
+    () => setTasteDecision(item, decision === 'keep' ? null : 'keep'),
   );
   keep.setAttribute('aria-pressed', String(decision === 'keep'));
   const skip = button(
-    decision === 'skip' ? 'Skipped' : 'Skip this one',
+    decision === 'skip' ? 'Less like me' : 'Less like this',
     decision === 'skip' ? 'review-button active-skip' : 'review-button',
-    () => setSessionDecision(item.archive_id, decision === 'skip' ? null : 'skip'),
+    () => setTasteDecision(item, decision === 'skip' ? null : 'skip'),
   );
   skip.setAttribute('aria-pressed', String(decision === 'skip'));
-  review.append(keep, skip);
-  const save = button(
-    savedArchiveIds.has(item.archive_id) ? 'Metadata saved' : 'Save this track’s metadata forever',
-    'archive-button',
-    (event) => archiveTrack(item, event.currentTarget),
-  );
-  save.disabled = savedArchiveIds.has(item.archive_id);
-  links.append(save);
-  body.append(title, artist, evidence, why, review, links);
+  review.append(play, keep, skip);
+  body.append(title, artist, evidence, why);
+  if (tasteWhy.textContent) body.append(tasteWhy);
+  body.append(review, links);
   row.append(number, body);
   return row;
 }
 
-function setSessionDecision(archiveId, decision) {
+async function setTasteDecision(item, decision) {
+  const archiveId = item.archive_id;
+  const previous = sessionDecisions.get(archiveId) || null;
   if (decision) sessionDecisions.set(archiveId, decision);
   else sessionDecisions.delete(archiveId);
   renderDiscovery(currentDiscoveryData);
+  try {
+    if (decision) {
+      const data = await api('/api/profile/judgments', {
+        method: 'PUT',
+        body: JSON.stringify({ runId: currentRun, archiveId, preference: decision }),
+      });
+      tasteProfile = data.profile;
+    } else {
+      tasteProfile = await api(`/api/profile/judgments/${encodeURIComponent(archiveId)}`, { method: 'DELETE' });
+    }
+    renderProfile();
+    if (decision) await advanceAfterTasteJudgment(item, decision);
+  } catch (error) {
+    if (previous) sessionDecisions.set(archiveId, previous);
+    else sessionDecisions.delete(archiveId);
+    renderDiscovery(currentDiscoveryData);
+    window.alert(error.message);
+  }
+}
+
+async function advanceAfterTasteJudgment(item, decision) {
+  const currentIndex = currentItems.findIndex((candidate) => candidate.archive_id === item.archive_id);
+  const queueAfterCurrent = currentIndex < 0
+    ? currentItems
+    : [...currentItems.slice(currentIndex + 1), ...currentItems.slice(0, currentIndex)];
+  const next = queueAfterCurrent.find((candidate) => !sessionDecisions.has(candidate.archive_id));
+  if (next) {
+    await loadPlayback(next);
+    return;
+  }
+  if (decision !== 'keep') {
+    $('#player-status').textContent = 'End of this shortlist. Mark a track More like this to keep exploring.';
+    return;
+  }
+  const seeds = seedsForExpansion().slice(0, 20);
+  if (seeds.length < 2) {
+    $('#player-status').textContent = 'QRator needs at least two non-skipped shortlist tracks to find a real overlapping shelf.';
+    return;
+  }
+  await runDiscovery({
+    query: seeds.join('\n'),
+    length: Number($('#playlist-length').value),
+    mode: 'discover',
+    thorough: false,
+  }, { playFirst: true });
 }
 
 function decisionCount(decision) {
@@ -254,9 +315,11 @@ function publishItems() {
 
 function seedsForExpansion() {
   const kept = currentItems.filter((item) => sessionDecisions.get(item.archive_id) === 'keep');
-  const reviewed = kept.length >= 2 ? kept : publishItems();
-  const seeds = reviewed.map((item) => `${item.artist} - ${item.title}`.trim()).filter(Boolean);
-  return seeds.slice(0, 12);
+  const otherNonSkipped = publishItems().filter((item) => !kept.some((keptItem) => keptItem.archive_id === item.archive_id));
+  const seeds = [...kept, ...otherNonSkipped]
+    .map((item) => `${item.artist} - ${item.title}`.trim())
+    .filter(Boolean);
+  return [...new Set(seeds)].slice(0, 12);
 }
 
 function metric(value, label) {
@@ -269,89 +332,169 @@ function metric(value, label) {
   return element;
 }
 
-async function archiveTrack(item, archiveButton) {
-  setBusy(archiveButton, true, 'Saving metadata');
+async function loadPlayback(item, preferredProvider = 'soundcloud', trigger = null) {
+  const requestId = ++playerRequestId;
+  activePlaybackItem = item;
+  const shell = $('#player-shell');
+  shell.hidden = false;
+  $('#player-title').textContent = item.title;
+  $('#player-artist').textContent = item.artist;
+  $('#player-provider').textContent = preferredProvider === 'spotify' ? 'Spotify fallback' : 'SoundCloud first';
+  $('#player-status').textContent = preferredProvider === 'spotify' ? 'Loading Spotify player…' : 'Looking for a strict SoundCloud match…';
+  $('#player-frame').innerHTML = '';
+  $('#player-fallback').hidden = true;
+  setBusy(trigger, true, 'Loading player');
+  shell.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
-    const data = await api('/api/library', {
-      method: 'POST',
-      body: JSON.stringify({ runId: currentRun, archiveId: item.archive_id }),
-    });
-    savedArchiveIds.add(data.track.archive_id);
-    archiveButton.dataset.label = 'Metadata saved';
+    let playback;
+    if (preferredProvider === 'spotify') {
+      playback = spotifyPlayback(item);
+      if (!playback) throw new Error('This track has no Spotify fallback.');
+    } else {
+      playback = await api('/api/discover/playback', {
+        method: 'POST',
+        body: JSON.stringify({ runId: currentRun, archiveId: item.archive_id }),
+      });
+    }
+    if (requestId !== playerRequestId) return;
+    renderEmbeddedPlayer(item, playback);
   } catch (error) {
-    archiveButton.dataset.label = 'Try saving again';
-    window.alert(error.message);
+    if (requestId !== playerRequestId) return;
+    $('#player-provider').textContent = 'Playback unavailable';
+    $('#player-status').textContent = error.message;
+    $('#player-fallback').hidden = !item.spotify_uri || preferredProvider === 'spotify';
   } finally {
-    setBusy(archiveButton, false);
-    archiveButton.disabled = savedArchiveIds.has(item.archive_id);
+    setBusy(trigger, false);
   }
 }
 
-async function refreshLibrary() {
+function spotifyPlayback(item) {
+  const id = String(item.spotify_uri || '').match(/^spotify:track:([A-Za-z0-9]+)$/)?.[1];
+  return id ? { provider: 'spotify', url: `https://open.spotify.com/track/${id}`, resolution: 'manual-fallback' } : null;
+}
+
+function renderEmbeddedPlayer(item, playback) {
+  const frame = document.createElement('iframe');
+  frame.title = `${playback.provider === 'soundcloud' ? 'SoundCloud' : 'Spotify'} player for ${item.artist} — ${item.title}`;
+  frame.loading = 'eager';
+  frame.allow = 'autoplay; encrypted-media; fullscreen; picture-in-picture';
+  frame.referrerPolicy = 'no-referrer';
+  if (playback.provider === 'soundcloud') {
+    const source = new URL('https://w.soundcloud.com/player/');
+    source.searchParams.set('url', playback.url);
+    source.searchParams.set('auto_play', 'true');
+    source.searchParams.set('hide_related', 'true');
+    source.searchParams.set('show_comments', 'false');
+    source.searchParams.set('show_reposts', 'false');
+    source.searchParams.set('visual', 'false');
+    frame.src = source.toString();
+    frame.height = '166';
+    $('#player-provider').textContent = playback.resolution === 'strict-search' ? 'SoundCloud · strict match' : 'SoundCloud';
+    $('#player-status').textContent = 'SoundCloud is QRator’s default player.';
+    $('#player-fallback').hidden = !item.spotify_uri;
+  } else {
+    const id = new URL(playback.url).pathname.split('/').filter(Boolean).at(-1);
+    frame.src = `https://open.spotify.com/embed/track/${encodeURIComponent(id)}`;
+    frame.height = '152';
+    $('#player-provider').textContent = 'Spotify fallback';
+    $('#player-status').textContent = 'No strict SoundCloud playback source was available.';
+    $('#player-fallback').hidden = true;
+  }
+  frame.width = '100%';
+  frame.setAttribute('frameborder', '0');
+  $('#player-frame').replaceChildren(frame);
+}
+
+function closePlayer() {
+  playerRequestId += 1;
+  activePlaybackItem = null;
+  $('#player-frame').innerHTML = '';
+  $('#player-status').textContent = '';
+  $('#player-shell').hidden = true;
+}
+
+async function refreshProfile() {
   try {
-    const data = await api('/api/library');
-    savedTracks = data.tracks || [];
-    savedArchiveIds = new Set(savedTracks.map((track) => track.archive_id));
-    renderLibrary();
+    tasteProfile = await api('/api/profile');
+    renderProfile();
   } catch (error) {
-    showText($('#library-output'), error.message, 'error error-panel');
+    showText($('#profile-output'), error.message, 'error error-panel');
   }
 }
 
-function renderLibrary() {
-  const output = $('#library-output');
-  output.innerHTML = '';
-  $('#library-title').textContent = savedTracks.length ? 'Metadata kept on purpose' : 'Nothing saved';
-  $('#library-stats').innerHTML = `<span>${savedTracks.length} saved</span><span>not used for ranking</span>`;
-  if (!savedTracks.length) {
-    return showText(output, 'Save a candidate explicitly and its metadata will appear here.', 'muted-empty');
+function renderProfile() {
+  const summary = tasteProfile.summary || { total: 0, kept: 0, skipped: 0, artists: [], sources: [] };
+  $('#profile-title').textContent = summary.total ? 'QRator is learning your shape' : 'No taste signals yet';
+  $('#profile-stats').innerHTML = `<span>${summary.total} judgments</span><span>${summary.kept} more like this</span><span>${summary.skipped} less like this</span>`;
+  const summaryOutput = $('#profile-summary');
+  summaryOutput.innerHTML = '';
+  if (summary.total) {
+    summaryOutput.append(profileFacet('Artist signals', summary.artists), profileFacet('Source signals', summary.sources));
   }
-  for (const [index, track] of savedTracks.entries()) {
-    const row = renderSavedTrack(track, index + 1);
+  const output = $('#profile-output');
+  output.innerHTML = '';
+  if (!tasteProfile.judgments?.length) {
+    return showText(output, 'Judge tracks in Discover and QRator will build an inspectable profile here.', 'muted-empty');
+  }
+  for (const [index, judgment] of tasteProfile.judgments.entries()) {
+    const row = document.createElement('article');
+    row.className = `candidate candidate-${judgment.preference}`;
+    const number = document.createElement('span');
+    number.className = 'candidate-number';
+    number.textContent = String(index + 1).padStart(2, '0');
+    const body = document.createElement('div');
+    body.className = 'candidate-body';
+    const title = document.createElement('strong');
+    title.textContent = judgment.title;
+    const artist = document.createElement('span');
+    artist.textContent = judgment.artist;
+    const detail = document.createElement('small');
+    detail.textContent = `${judgment.preference === 'keep' ? 'More like this' : 'Less like this'} · updated ${new Date(judgment.updated_at).toLocaleString()}`;
+    const remove = button('Remove this judgment', 'remove-button', () => removeTasteJudgment(judgment));
+    body.append(title, artist, detail, remove);
+    row.append(number, body);
     output.append(row);
   }
 }
 
-function renderSavedTrack(track, index) {
-  const row = document.createElement('article');
-  row.className = 'candidate';
-  const number = document.createElement('span');
-  number.className = 'candidate-number';
-  number.textContent = String(index).padStart(2, '0');
-  const body = document.createElement('div');
-  body.className = 'candidate-body';
-  const title = document.createElement('strong');
-  title.textContent = track.title;
-  const artist = document.createElement('span');
-  artist.textContent = [track.artist, track.album].filter(Boolean).join(' — ');
-  const saved = document.createElement('small');
-  saved.textContent = `Saved ${new Date(track.saved_at).toLocaleString()} · never used for ranking`;
-  const actions = document.createElement('div');
-  actions.className = 'candidate-links';
-  if (track.spotify_uri) actions.append(externalLink(`https://open.spotify.com/track/${track.spotify_uri.split(':').at(-1)}`, 'Spotify'));
-  if (track.soundcloud_url) actions.append(externalLink(track.soundcloud_url, 'SoundCloud'));
-  if (track.musicbrainz_id) actions.append(externalLink(`https://musicbrainz.org/recording/${track.musicbrainz_id}`, 'MusicBrainz'));
-  actions.append(button('Remove saved metadata', 'remove-button', () => removeArchivedTrack(track)));
-  body.append(title, artist, saved, actions);
-  row.append(number, body);
-  return row;
+function profileFacet(title, stats = []) {
+  const section = document.createElement('section');
+  section.className = 'profile-facet';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  const values = document.createElement('div');
+  values.className = 'stats';
+  for (const stat of stats.slice(0, 10)) {
+    const pill = document.createElement('span');
+    pill.textContent = `${stat.label}: ${stat.net > 0 ? '+' : ''}${stat.net}`;
+    values.append(pill);
+  }
+  if (!stats.length) values.textContent = 'Not enough signal yet.';
+  section.append(heading, values);
+  return section;
 }
 
-async function removeArchivedTrack(track) {
-  if (!window.confirm(`Remove the saved metadata for “${track.artist} — ${track.title}”?`)) return;
-  await api(`/api/library/${encodeURIComponent(track.archive_id)}`, { method: 'DELETE' });
-  await refreshLibrary();
+async function removeTasteJudgment(judgment) {
+  if (!window.confirm(`Remove your taste judgment for “${judgment.artist} — ${judgment.title}”?`)) return;
+  tasteProfile = await api(`/api/profile/judgments/${encodeURIComponent(judgment.archive_id)}`, { method: 'DELETE' });
+  sessionDecisions.delete(judgment.archive_id);
+  if (currentDiscoveryData) renderDiscovery(currentDiscoveryData);
+  renderProfile();
 }
 
-function exportLibrary() {
-  const payload = JSON.stringify({
-    schema_version: 1,
-    purpose: 'Explicitly saved track metadata. Never used for ranking.',
-    tracks: savedTracks,
-  }, null, 2);
+async function eraseProfile() {
+  if (!window.confirm('Erase every taste judgment? QRator will stop personalizing future discovery until you teach it again.')) return;
+  tasteProfile = await api('/api/profile', { method: 'DELETE' });
+  sessionDecisions.clear();
+  if (currentDiscoveryData) renderDiscovery(currentDiscoveryData);
+  renderProfile();
+}
+
+function exportProfile() {
+  const payload = JSON.stringify(tasteProfile, null, 2);
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([`${payload}\n`], { type: 'application/json' }));
-  link.download = `qrator-saved-metadata-${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = `qrator-taste-profile-${new Date().toISOString().slice(0, 10)}.json`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -365,24 +508,27 @@ function externalLink(href, label) {
   return link;
 }
 
-function openPublish() {
+function openPublish(provider) {
   const output = $('#discover-output');
   output.querySelector('.publish-bar')?.remove();
   const form = document.createElement('form');
   form.className = 'publish-bar';
   const spotifyCount = publishItems().filter((item) => item.spotify_uri).length;
   const soundcloudCount = publishItems().length;
-  form.innerHTML = `<label><span>Playlist name</span><input name="name" maxlength="100" value="QRator discovery"></label><label class="toggle-row compact"><span><strong>Public</strong></span><input name="public" type="checkbox"></label><button class="primary" type="submit">Publish ${spotifyCount} Spotify-ready</button><button class="secondary soundcloud-publish" type="button">Resolve & publish ${soundcloudCount} to SoundCloud</button><span class="publish-result"></span>`;
-  form.addEventListener('submit', publishDiscovery);
-  form.querySelector('.soundcloud-publish').addEventListener('click', publishSoundcloudDiscovery);
+  const count = provider === 'soundcloud' ? soundcloudCount : spotifyCount;
+  const destination = provider === 'soundcloud' ? 'SoundCloud' : 'Spotify';
+  form.dataset.provider = provider;
+  form.innerHTML = `<label><span>Playlist name</span><input name="name" maxlength="100" value="QRator discovery"></label><label class="toggle-row compact"><span><strong>Public</strong></span><input name="public" type="checkbox"></label><button class="primary" type="submit">Publish ${count} to ${destination}</button><span class="publish-result"></span>`;
+  form.addEventListener('submit', provider === 'soundcloud' ? publishSoundcloudDiscovery : publishDiscovery);
   output.prepend(form);
   form.elements.name.focus();
 }
 
 async function publishSoundcloudDiscovery(event) {
-  const form = event.currentTarget.closest('form');
+  event.preventDefault();
+  const form = event.currentTarget;
   const result = form.querySelector('.publish-result');
-  setBusy(event.currentTarget, true, 'Resolving SoundCloud');
+  setBusy(event.submitter, true, 'Resolving & publishing');
   try {
     const data = await api('/api/discover/soundcloud-playlist', {
       method: 'POST',
@@ -395,7 +541,7 @@ async function publishSoundcloudDiscovery(event) {
     });
     renderSpotifyLink(result, data.playlist.permalink_url, `Open SoundCloud playlist (${data.added}; ${data.unresolved} unresolved)`);
   } catch (error) { showText(result, error.message, 'error'); }
-  finally { setBusy(event.currentTarget, false); }
+  finally { setBusy(event.submitter, false); }
 }
 
 async function publishDiscovery(event) {

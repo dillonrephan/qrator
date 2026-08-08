@@ -6,21 +6,25 @@ The original project at `/home/ice/projects/spotify` is not modified or used for
 
 ## Current Direction
 
-QRator now has a useful credential-free discovery lane: artist seeds expand
-through the official ListenBrainz radio API, MusicBrainz supplies recording
-identity, and every result remains visible even when Spotify cannot resolve it.
-Spotify is a capped, strict resolver and explicit publishing target rather than
-the discovery engine.
+QRator now treats SoundCloud's real public user curation as its primary
+discovery surface. Two to four shortlist tracks are resolved on SoundCloud,
+their liker lists are intersected across a bounded sample of profiles, and
+qualifying public likes and playlists become inspectable shelves. A shelf needs
+at least two distinct shortlist hits; one shared song is only a lead. Direct
+playlist search and overlap distributed across several playlists owned by the
+same profile are additive evidence.
+Algorithmic artist-radio and similar-track feeds are not counted as shelves.
+Spotify remains a capped, strict resolver and explicit publishing target rather
+than the discovery engine.
 
 An explicitly supplied canonical ListenBrainz profile URL can also be treated
 as a trusted shelf. QRator reads one bounded page of that user's six-month top
 recordings without authentication; listen counts remain provenance metadata
 and do not become ranking weight.
 
-SoundCloud-first discovery and publishing remain the next supported provider
-integration, using SoundCloud's official OAuth API. A disabled-by-default,
-bounded experimental reader can ingest metadata embedded in an explicitly
-provided public SoundCloud page while credentials are pending. See
+SoundCloud-first discovery, playback, hydration, and publishing use the
+official OAuth API. A bounded experimental reader remains available only as an
+additive fallback for explicitly provided public SoundCloud pages. See
 [Platform Strategy](docs/PLATFORM_STRATEGY.md) and
 [Implementation Status](docs/IMPLEMENTATION_STATUS.md). QRator's default
 ephemeral behavior and explicit archive boundary are documented in
@@ -40,7 +44,7 @@ Configure and start the app:
 cp .env.example .env
 chmod 600 .env
 # Fill in the Spotify client ID and secret.
-# Last.fm is optional. ListenBrainz artist-radio discovery needs no key.
+# SoundCloud connection enables seed-to-user-shelf discovery.
 npm start
 ```
 
@@ -74,15 +78,29 @@ discovery removes the pre-run empty state from layout at 1920×1080 and
 
 - The HTTP server listens only on loopback.
 - Each discovery request runs in its own temporary directory and SQLite database.
-- QRator ships with no personal taste anchors and does not learn a durable taste
-  profile by default.
-- Review controls are session-only: **Keep for this mix** prioritizes tracks as
-  seeds for the next expansion, while **Skip this one** excludes tracks from
-  expansion and publishing. Both reset on the next run or page reload.
-- The GUI's **Save this track's metadata forever** action is an explicit local
-  archive operation. Saved metadata is never used for ranking and can be
-  inspected, exported, or individually removed.
-- Keyless artist discovery uses bounded ListenBrainz radio and bulk MusicBrainz metadata.
+- QRator builds a local taste profile from explicit **More like this** and
+  **Less like this** judgments. Exact-track, artist, and source signals reorder
+  later discoveries through a separate, visible taste adjustment.
+- Discovery review has one click-to-load in-app player. QRator uses a known
+  SoundCloud URL first, otherwise attempts a strict official SoundCloud match,
+  and falls back to an available Spotify track embed. Only one provider frame
+  is loaded at a time, after an explicit play action.
+- Taste judgments survive runs and reloads, can be inspected, exported, or
+  removed, and can be erased completely. They are stored owner-only at
+  `data/taste-profile.json`, ignored by Git.
+- Spotify authorization requests `user-top-read` so an explicitly requested
+  run can use the account's top tracks as seeds. Provider history is never
+  imported silently or converted into durable taste judgments.
+- **More like this** prioritizes tracks as seeds for the next expansion, while
+  **Less like this** excludes tracks from current expansion and publishing.
+- Connected SoundCloud seed discovery uses only bounded public user likes and
+  playlists as shelves. Every shelf needs at least two distinct shortlist hits,
+  whether in one likes list, one hand-made playlist, or across several playlists
+  owned by the same profile. It does not treat algorithmic radios as human
+  curation.
+- The web form automatically expands bounded seed input (up to twenty artist or
+  track lines) through discovery. URLs and larger pasted tracklists stay on the
+  source-distillation path instead of being mistaken for expansion seeds.
 - Canonical `https://listenbrainz.org/user/<username>` inputs read one official
   top-recordings page: offset zero, `half_yearly`, and at most 100 rows. QRator
   does not traverse similar users, hydrate missing MBIDs, or score raw listen
@@ -93,6 +111,14 @@ discovery removes the pre-run empty state from layout at 1920×1080 and
   no `api-v2`, JavaScript-bundle mining, or persisted web-client credentials.
   It is bounded to SoundCloud HTTPS hosts, three redirects, 2 MiB, 100 tracks,
   and the run deadline, and may break when SoundCloud changes its HTML.
+- Explicit SoundCloud URLs use the connected official API first for a bounded
+  track, playlist, profile-upload, or likes-page hydration. The experimental
+  page/RSS reader remains enabled as an additive fallback; it is not treated as
+  successful when it exposes no tracks.
+- Mixed input is additive: explicit source URLs and SoundCloud shelves found
+  from bounded artist/track seeds can contribute to the same shortlist.
+  Matching recording identities merge provider identifiers and source
+  provenance instead of replacing one source with another.
 - Final Spotify resolution is strict, persistently cached, and capped at twelve new queries by default.
 - Spotify and Python discovery share a durable provider cooldown. Full `Retry-After`
   values are retained; long waits return useful partial results instead of hammering.
@@ -106,18 +132,25 @@ discovery removes the pre-run empty state from layout at 1920×1080 and
   structured developer-account quota state for the current request.
 - SoundCloud-only and catalog-only candidates remain in review output, with direct
   SoundCloud and YouTube search links when no publishable target resolution exists.
+- Discovery length can be set from 5 to 475 tracks. Long mixes retain
+  shelf-balanced selection instead of exhausting one source before moving to
+  the next; SoundCloud publishing accepts up to the provider's 500-track cap.
+- Every reviewed shortlist exposes a first-class **Publish to SoundCloud**
+  action with playlist name and public/private controls. QRator strictly
+  resolves the non-skipped mix and reports anything it could not add.
 - Provenance observations are idempotent and source weight is aggregated once per
   candidate/source.
 - Platform identifiers are also stored in `platform_resolutions`; legacy columns
   remain during the compatibility migration.
-- Last.fm profile URLs harvest six-month top tracks; seed tracks also draw from Last.fm similar tracks when `LASTFM_API_KEY` is configured.
+- Explicit Last.fm profile URLs can still harvest a user's six-month top tracks;
+  Last.fm similar-track responses are not used as shelves.
 - Temporary discovery files are removed whether the run succeeds or fails.
 - Reviewed results are retained in memory for one hour and addressed by a random run ID.
 - Spotify publishing requires the run ID returned by that exact discovery request.
 - Request bodies are limited to 256 KiB.
 - OAuth state values expire after ten minutes.
 - `.env`, Spotify tokens, databases, and generated output are ignored by Git.
-- The owner-only metadata archive at `data/saved-tracks.json` is also ignored by Git.
+- The owner-only taste profile at `data/taste-profile.json` is ignored by Git.
 
 ## CLI
 

@@ -2,19 +2,19 @@
 
 Status: staged implementation in progress
 
-Last reviewed: 2026-07-23
+Last reviewed: 2026-08-04
 
-Implementation checkpoint (2026-07-26): Stage 1 provenance aggregation and
-Stage 2 cooldown/partial-result foundations are active; keyless ListenBrainz
-radio now supplies official discovery while provider credentials are pending.
-Generic platform-resolution storage has begun, but the compatibility migration
-and official SoundCloud OAuth/URN adapter are not complete. See
+Implementation checkpoint (2026-08-04): provenance aggregation,
+cooldown/partial-result foundations, official SoundCloud OAuth/string-URN
+support, and bounded SoundCloud user-shelf discovery are active. Algorithmic
+radio and similar-track feeds are not used as shelf evidence. See
 [Implementation Status](IMPLEMENTATION_STATUS.md).
 
-QRator does not maintain a taste profile by default. Discovery ranks evidence
-paths through shelves rather than predicting preference. Durable metadata crosses
-the session boundary only through an explicit per-track archive action and is
-never fed back into ranking. See [Memory Model](MEMORY_MODEL.md).
+QRator maintains a local taste profile from explicit track judgments. Discovery
+still calculates shelf evidence independently, then applies a separate bounded
+taste adjustment based on exact-track, artist, and source history. The local
+taste profile is the sole durable user-curation store. See [Memory
+Model](MEMORY_MODEL.md).
 
 ### Credential-free ListenBrainz shelves
 
@@ -27,14 +27,14 @@ rows become candidates directly; a recording MBID is useful but not required.
 The user's raw listen count and selected time range are retained only as
 provenance metadata. Listen count does not add ranking weight. This source does
 not query MusicBrainz to fill missing identifiers, traverse similar users,
-recurse into other profiles, require a ListenBrainz token, or create a durable
-taste profile. A new profile is read only when its canonical URL is explicitly
-supplied.
+recurse into other profiles, require a ListenBrainz token, or automatically
+turn a public user's listens into the local taste profile. A public profile is
+read only when its canonical URL is explicitly supplied.
 
 ## Objective
 
-QRator will use SoundCloud as its primary discovery surface, Last.fm as a
-listening-history and similarity signal, and Spotify as a catalog resolver and
+QRator uses SoundCloud as its primary discovery surface, explicit public user
+lists as secondary shelf inputs, and Spotify as a catalog resolver and
 publishing destination within the access granted to the configured Spotify
 application.
 
@@ -71,6 +71,29 @@ The official OAuth/URN adapter remains the replacement rather than an extension
 of this reader.
 
 ## Official SoundCloud Integration
+
+SoundCloud is also the default in-app review player. QRator first uses a known
+candidate permalink, then attempts strict artist/title resolution through the
+official API, and uses Spotify only when no exact SoundCloud playback source is
+available. The player is an official provider iframe loaded after an explicit
+user action; playback behavior is not inferred as taste feedback.
+
+For explicitly supplied SoundCloud source URLs, the connected official API is
+the primary hydrator. One bounded page of tracks, playlist contents, profile
+uploads, or likes is combined with any seed-derived shelves in the same run.
+The experimental public-page/RSS reader remains an additive fallback, and
+recording-level deduplication merges source provenance rather than selecting one
+provider as the sole truth.
+
+For seed expansion, QRator uses a fixed one-hop traversal through documented
+public endpoints: strict track search, bounded favoriter lists intersected
+across two to twenty shortlist tracks, then bounded pages from profiles with at
+least two hits. Documented playlist search contributes additional real
+playlist candidates. A single playlist can qualify with two hits; hits spread
+across several hand-made playlists can qualify the common owner profile. Seed
+recordings are removed from recommendations. Each result names the likes list,
+playlist, or profile-level playlist evidence that exposed it; radio,
+related-user, and similar-track responses are not treated as shelves.
 
 All SoundCloud traffic will use the documented `api.soundcloud.com` and
 `secure.soundcloud.com` endpoints with a registered SoundCloud application.
@@ -110,12 +133,10 @@ OpenAPI playlist-track payload contract in a private three-track canary before
 enabling publishing. It will use URNs only where the API accepts them and will
 never silently derive or retain deprecated numeric IDs.
 
-The first user-facing publishing path is now implemented: local OAuth 2.1 PKCE,
+The first user-facing publishing path is implemented: local OAuth 2.1 PKCE,
 owner-only token storage, exact artist/title resolution to string URNs, and
-explicit private/public playlist creation. Discovery remains platform-neutral;
-SoundCloud resolution happens only at explicit publish time. The first private
-three-track canary remains the next live verification step before expanding
-user shelf traversal.
+explicit private/public playlist creation. The private three-track publish
+canary passed, and bounded user shelf traversal is now active for discovery.
 
 References:
 

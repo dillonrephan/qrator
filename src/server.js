@@ -14,12 +14,21 @@ const publicDir = path.join(root, 'public');
 const tokenPath = path.join(root, '.spotify-token.json');
 const soundcloudTokenPath = path.join(root, '.soundcloud-token.json');
 const stateDir = path.join(root, 'data');
-const savedTracksPath = path.join(stateDir, 'saved-tracks.json');
+const tasteProfilePath = path.join(stateDir, 'taste-profile.json');
 const runFile = promisify(execFile);
 const MAX_BODY_BYTES = 256 * 1024;
-const MAX_SAVED_TRACKS = 5_000;
+const MAX_TASTE_JUDGMENTS = 10_000;
+const MAX_PLAYLIST_LENGTH = 475;
+const MAX_SOUNDCLOUD_PLAYLIST_TRACKS = 500;
 const RUN_TTL_MS = 60 * 60 * 1000;
 const STATE_TTL_MS = 10 * 60 * 1000;
+const SOUNDCLOUD_DISCOVERY_SEED_LIMIT = 20;
+const SOUNDCLOUD_PLAYLIST_SEARCH_LIMIT = 20;
+const SOUNDCLOUD_FAVORITER_PAGE_SIZE = 200;
+const SOUNDCLOUD_FAVORITER_PAGE_LIMIT = 5;
+const SOUNDCLOUD_QUALIFIED_CURATOR_LIMIT = 25;
+const SOUNDCLOUD_USER_PLAYLIST_LIMIT = 10;
+const SOUNDCLOUD_SHELF_TRACK_LIMIT = 100;
 
 loadEnv(path.join(root, '.env'));
 
@@ -38,15 +47,18 @@ const scopes = [
   'playlist-modify-private',
   'playlist-modify-public',
   'playlist-read-private',
+  'user-top-read',
   'user-read-private',
 ].join(' ');
 
 const pendingStates = new Map();
 const pendingSoundcloudStates = new Map();
 const discoveryRuns = new Map();
-let libraryWrite = Promise.resolve();
+let tasteProfileWrite = Promise.resolve();
 
-export const server = http.createServer(handleRequest);
+export const server = http.createServer((req, res) => {
+  void handleRequest(req, res).catch((error) => respondWithError(res, error));
+});
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   server.listen(config.port, '127.0.0.1', () => {
@@ -81,17 +93,17 @@ async function handleRequest(req, res) {
       });
     }
     if (req.method === 'GET' && url.pathname === '/api/me') return spotifyProxy(res, 'https://api.spotify.com/v1/me');
-    if (req.method === 'GET' && url.pathname === '/api/library') {
-      return json(res, 200, {
-        tracks: await readSavedTracks(),
-        usedForRanking: false,
-        storage: 'local explicit archive',
-      });
+    if (req.method === 'GET' && url.pathname === '/api/profile') {
+      const judgments = await readTasteProfile();
+      return json(res, 200, tasteProfileDocument(judgments));
     }
-    if (req.method === 'POST' && url.pathname === '/api/library') return archiveCandidate(req, res);
-    if (req.method === 'DELETE' && url.pathname.startsWith('/api/library/')) {
-      return removeArchivedCandidate(url, res);
+    if (req.method === 'PUT' && url.pathname === '/api/profile/judgments') {
+      return recordTasteJudgment(req, res);
     }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/profile/judgments/')) {
+      return removeTasteJudgment(url, res);
+    }
+    if (req.method === 'DELETE' && url.pathname === '/api/profile') return eraseTasteProfile(res);
     if (req.method === 'GET' && url.pathname === '/api/search') {
       const query = url.searchParams.get('q')?.trim();
       if (!query) return json(res, 400, { error: 'Missing search query.' });
@@ -104,15 +116,24 @@ async function handleRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/playlists') return createPlaylist(req, res);
     if (req.method === 'GET' && url.pathname === '/api/soundcloud/search') return soundcloudSearch(url, res);
     if (req.method === 'POST' && url.pathname === '/api/discover') return discover(req, res);
+    if (req.method === 'POST' && url.pathname === '/api/discover/playback') return resolveDiscoveryPlayback(req, res);
     if (req.method === 'POST' && url.pathname === '/api/discover/playlist') return createDiscoveryPlaylist(req, res);
     if (req.method === 'POST' && url.pathname === '/api/discover/soundcloud-playlist') return createSoundcloudDiscoveryPlaylist(req, res);
     return json(res, 404, { error: 'Not found.' });
   } catch (error) {
-    console.error(error);
-    return json(res, Number.isInteger(error.status) ? error.status : 500, {
-      error: error.expose === false ? 'Unexpected error.' : error.message || 'Unexpected error.',
-    });
+    return respondWithError(res, error);
   }
+}
+
+function respondWithError(res, error) {
+  console.error(error);
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  return json(res, Number.isInteger(error.status) ? error.status : 500, {
+    error: error.expose === false ? 'Unexpected error.' : error.message || 'Unexpected error.',
+  });
 }
 
 function startSoundcloudLogin(res) {
@@ -211,15 +232,18 @@ async function discover(req, res) {
   const body = await readJson(req);
   const input = cleanText(body.query, 50_000);
   const length = parseLength(body.length);
-  const mode = body.mode === 'discover' ? 'discover' : 'distill';
-  if (!input) return json(res, 400, { error: 'Add at least two seeds, a source URL, or pasted tracklist text.' });
+  if (!input) return json(res, 400, { error: 'Add a seed, a source URL, or pasted tracklist text.' });
 
   const parsed = parseDiscoveryInput(input);
-  if (parsed.seeds.length < 2 && parsed.urls.length === 0 && !parsed.text) {
-    return json(res, 400, { error: 'Use at least two seeds, a source URL, or pasted tracklist text.' });
+  const mode = chooseDiscoveryMode(body.mode, input, parsed);
+  if (parsed.seeds.length < 1 && parsed.urls.length === 0 && !parsed.text) {
+    return json(res, 400, { error: 'Use a seed, a source URL, or pasted tracklist text.' });
   }
   if (mode === 'discover' && parsed.seeds.length < 2) {
-    return json(res, 400, { error: 'Expanding a shortlist requires at least two seed tracks or artists.' });
+    return json(res, 400, { error: 'Expanding a shortlist requires at least two distinct seed tracks or artists so a shelf can prove overlap.' });
+  }
+  if (parsed.seeds.length === 1 && parsed.urls.length === 0 && !parsed.text) {
+    return json(res, 400, { error: 'Add at least two distinct tracks or artists. One shared song does not qualify a SoundCloud shelf.' });
   }
 
   const runDir = await mkdtemp(path.join(os.tmpdir(), 'qrator-run-'));
@@ -230,14 +254,38 @@ async function discover(req, res) {
       await copyFile(tokenPath, runTokenPath);
       await chmod(runTokenPath, 0o600);
     }
+    const pythonSourceUrls = [];
+    const officialSoundcloudItems = [];
+    let soundcloudShelfReport = null;
+    if (parsed.seeds.length && existsSync(soundcloudTokenPath)) {
+      try {
+        const discovered = await discoverSoundcloudShelves(parsed.seeds, parsed.seedType === '--tracks');
+        officialSoundcloudItems.push(...discovered.items);
+        soundcloudShelfReport = discovered.report;
+      } catch (error) {
+        console.warn(`Official SoundCloud shelf discovery failed: ${error.message}`);
+      }
+    }
+    for (const [index, sourceUrl] of parsed.urls.entries()) {
+      if (safeExternalUrl(sourceUrl, 'soundcloud.com') && existsSync(soundcloudTokenPath)) {
+        try {
+          const tracks = await officialSoundcloudTracksFromUrl(sourceUrl);
+          officialSoundcloudItems.push(...tracks.map((track) => soundcloudCandidateFromTrack(track, index + 1)));
+        } catch (error) {
+          console.warn(`Official SoundCloud source hydration failed; trying the bounded page reader: ${error.message}`);
+        }
+      }
+      pythonSourceUrls.push(sourceUrl);
+    }
     const dbPath = path.join(runDir, 'qrator.sqlite');
     const args = ['-m', 'music_harvester.main', '--db', dbPath, mode === 'discover' ? 'discover-from-seeds' : 'create-seeds'];
     if (parsed.seeds.length) args.push(parsed.seedType, ...parsed.seeds);
     if (mode === 'discover') args.push('--search-limit', '10');
     else {
-      for (const sourceUrl of parsed.urls) args.push('--source-url', sourceUrl);
+      for (const sourceUrl of pythonSourceUrls) args.push('--source-url', sourceUrl);
       if (parsed.text) args.push('--text', parsed.text);
       if (body.thorough) args.push('--thorough');
+      if (parsed.seeds.length) args.push('--search-limit', '10');
     }
     args.push('--length', String(length));
     const completed = await runPython(args, runDir);
@@ -248,24 +296,385 @@ async function discover(req, res) {
       readOptional(path.join(outputDir, 'unresolved_interesting.md')),
       readJsonFile(path.join(outputDir, 'final_playlist.json'), []),
     ]);
+    const mergedItems = mergeHydratedCandidates([...officialSoundcloudItems, ...items]);
+    if (!mergedItems.length) {
+      console.warn(`Discovery produced no items. Command: python ${args.join(' ')}\n${completed.stdout}\n${completed.stderr}`);
+      let message = 'Discovery completed but found no usable tracks. Try different seeds or a different source URL.';
+      if (parsed.urls.some((url) => safeExternalUrl(url, 'soundcloud.com'))) {
+        message = 'No tracks were available from that SoundCloud page. Official API hydration and the enabled bounded page reader both returned nothing.';
+      } else if (parsed.seeds.length && !existsSync(soundcloudTokenPath)) {
+        message = 'Connect SoundCloud to discover real public user likes and playlist shelves from track or artist seeds.';
+      } else if (parsed.seeds.length) {
+        message = 'SoundCloud found no usable public user likes or playlist shelves for those seeds. Try a more exact artist/track seed.';
+      }
+      const error = new Error(message);
+      error.status = 422;
+      throw error;
+    }
+    const judgments = await readTasteProfile();
+    const rankedItems = diversifyAcrossShelves(rankCandidatesForTaste(mergedItems, judgments), length);
     const runId = crypto.randomUUID();
     pruneRuns();
-    discoveryRuns.set(runId, { createdAt: Date.now(), items });
+    discoveryRuns.set(runId, { createdAt: Date.now(), items: rankedItems });
     return json(res, 200, {
       runId,
       playlist,
-      sources,
+      sources: [soundcloudShelfReport, sources].filter(Boolean).join('\n\n'),
       unresolved,
       log: completed.stdout,
-      seeds: playlistSeeds(items),
-      resolved: items.filter((item) => item.spotify_uri).length,
-      total: items.length,
-      items: items.map(publicCandidate),
+      seeds: playlistSeeds(rankedItems),
+      resolved: rankedItems.filter((item) => item.spotify_uri).length,
+      total: rankedItems.length,
+      items: rankedItems.map(publicCandidate),
+      profileJudgments: judgments.length,
       mode,
     });
   } finally {
     await rm(runDir, { recursive: true, force: true });
   }
+}
+
+async function officialSoundcloudTracksFromUrl(sourceUrl, limit = 100) {
+  const safeUrl = safeExternalUrl(sourceUrl, 'soundcloud.com');
+  if (!safeUrl) throw new Error('Official SoundCloud hydration requires a public HTTPS SoundCloud URL.');
+  const source = new URL(safeUrl);
+  const sourcePath = source.pathname.replace(/\/+$/, '').toLowerCase();
+  const resolveTarget = new URL(safeUrl);
+  if (sourcePath.endsWith('/likes')) resolveTarget.pathname = resolveTarget.pathname.replace(/\/likes\/?$/i, '');
+  const resolveUrl = new URL('https://api.soundcloud.com/resolve');
+  resolveUrl.searchParams.set('url', resolveTarget.toString());
+  const resolved = await soundcloudFetch(resolveUrl);
+  if (resolved?.kind === 'track') return [resolved];
+  if (resolved?.kind === 'playlist' || resolved?.kind === 'system-playlist') {
+    return soundcloudTrackCollection(resolved.tracks, limit);
+  }
+  if (resolved?.kind === 'user' && /^soundcloud:users:[A-Za-z0-9]+$/.test(String(resolved.urn || ''))) {
+    const collection = sourcePath.endsWith('/likes') ? 'likes/tracks' : 'tracks';
+    const tracksUrl = new URL(`https://api.soundcloud.com/users/${encodeURIComponent(resolved.urn)}/${collection}`);
+    tracksUrl.searchParams.set('limit', String(limit));
+    tracksUrl.searchParams.set('linked_partitioning', 'true');
+    const page = await soundcloudFetch(tracksUrl);
+    return soundcloudTrackCollection(Array.isArray(page) ? page : page?.collection, limit);
+  }
+  return [];
+}
+
+export async function discoverSoundcloudShelves(seedValues, trackSeeds, fetcher = soundcloudFetch) {
+  const seenSeeds = new Set();
+  const seeds = seedValues
+    .map((value) => soundcloudSeed(value, trackSeeds))
+    .filter((seed) => {
+      const key = normalizedMatchText(seed.value);
+      if (!key || seenSeeds.has(key)) return false;
+      seenSeeds.add(key);
+      return true;
+    })
+    .slice(0, SOUNDCLOUD_DISCOVERY_SEED_LIMIT);
+  const items = [];
+  const shelves = new Set();
+  const errors = [];
+  const playlistCandidates = new Map();
+  const curatorOverlaps = new Map();
+  const profilePlaylistEvidence = new Map();
+
+  for (const [seedIndex, seed] of seeds.entries()) {
+    const playlistSearch = new URL('https://api.soundcloud.com/playlists');
+    playlistSearch.searchParams.set('q', seed.value);
+    playlistSearch.searchParams.set('show_tracks', 'true');
+    playlistSearch.searchParams.set('limit', String(SOUNDCLOUD_PLAYLIST_SEARCH_LIMIT));
+    playlistSearch.searchParams.set('linked_partitioning', 'true');
+    try {
+      const page = await fetcher(playlistSearch);
+      for (const playlist of soundcloudCollection(page).slice(0, SOUNDCLOUD_PLAYLIST_SEARCH_LIMIT)) {
+        const urn = String(playlist?.urn || '');
+        if (/^soundcloud:playlists:[A-Za-z0-9]+$/.test(urn)) playlistCandidates.set(urn, playlist);
+      }
+    } catch (error) {
+      errors.push(`playlist search for ${seed.value}: ${error.message}`);
+    }
+
+    const trackSearch = new URL('https://api.soundcloud.com/tracks');
+    trackSearch.searchParams.set('q', seed.value);
+    trackSearch.searchParams.set('access', 'playable,preview');
+    trackSearch.searchParams.set('limit', '12');
+    trackSearch.searchParams.set('linked_partitioning', 'true');
+    let anchor = null;
+    try {
+      const page = await fetcher(trackSearch);
+      anchor = soundcloudCollection(page).find((track) => soundcloudTrackMatchesSeed(track, seed)) || null;
+    } catch (error) {
+      errors.push(`track search for ${seed.value}: ${error.message}`);
+    }
+    if (!anchor?.urn) continue;
+
+    const curators = [];
+    for (let pageIndex = 0; pageIndex < SOUNDCLOUD_FAVORITER_PAGE_LIMIT; pageIndex += 1) {
+      const favoritersUrl = new URL(`https://api.soundcloud.com/tracks/${encodeURIComponent(anchor.urn)}/favoriters`);
+      favoritersUrl.searchParams.set('limit', String(SOUNDCLOUD_FAVORITER_PAGE_SIZE));
+      favoritersUrl.searchParams.set('offset', String(pageIndex * SOUNDCLOUD_FAVORITER_PAGE_SIZE));
+      try {
+        const page = soundcloudCollection(await fetcher(favoritersUrl)).slice(0, SOUNDCLOUD_FAVORITER_PAGE_SIZE);
+        curators.push(...page);
+        if (page.length < SOUNDCLOUD_FAVORITER_PAGE_SIZE) break;
+      } catch (error) {
+        errors.push(`likers page ${pageIndex + 1} for ${seed.value}: ${error.message}`);
+        break;
+      }
+    }
+
+    for (const curator of curators) {
+      const urn = String(curator?.urn || '');
+      if (!/^soundcloud:users:[A-Za-z0-9]+$/.test(urn)) continue;
+      const overlap = curatorOverlaps.get(urn) || { curator, seedIndexes: new Set() };
+      overlap.seedIndexes.add(seedIndex);
+      curatorOverlaps.set(urn, overlap);
+    }
+  }
+
+  for (const playlist of playlistCandidates.values()) {
+    try {
+      const tracks = await soundcloudPlaylistTracks(playlist, fetcher);
+      const hitIndexes = soundcloudShelfSeedHits(tracks, seeds);
+      if (hitIndexes.size >= 2) {
+        await addSoundcloudPlaylistShelf({ playlist, tracks, seeds, fetcher, items, shelves });
+      }
+      if (hitIndexes.size) {
+        const owner = cleanText(playlist.user?.username, 200) || 'SoundCloud user';
+        const ownerKey = cleanText(playlist.user?.urn || playlist.user?.permalink_url, 300) || normalizedMatchText(owner);
+        const profile = profilePlaylistEvidence.get(ownerKey) || { owner, playlists: [], hitIndexes: new Set() };
+        profile.playlists.push({ playlist, tracks });
+        for (const index of hitIndexes) profile.hitIndexes.add(index);
+        profilePlaylistEvidence.set(ownerKey, profile);
+      }
+    } catch (error) {
+      errors.push(`searched playlist ${cleanText(playlist?.title, 200) || playlist?.urn}: ${error.message}`);
+    }
+  }
+
+  for (const profile of profilePlaylistEvidence.values()) {
+    if (profile.hitIndexes.size < 2 || profile.playlists.length < 2) continue;
+    const source = `SoundCloud profile playlists · ${profile.owner}`;
+    addSoundcloudTrackShelf({
+      tracks: profile.playlists.flatMap((entry) => entry.tracks),
+      seeds,
+      items,
+      shelves,
+      source,
+      why: `${profile.owner} placed ${profile.hitIndexes.size} distinct shortlist tracks across ${profile.playlists.length} hand-made SoundCloud playlists.`,
+      confidence: Math.min(95, 88 + ((profile.hitIndexes.size - 2) * 3)),
+    });
+  }
+
+  const qualifiedCurators = [...curatorOverlaps.values()]
+    .filter((entry) => entry.seedIndexes.size >= 2)
+    .sort((a, b) => b.seedIndexes.size - a.seedIndexes.size)
+    .slice(0, SOUNDCLOUD_QUALIFIED_CURATOR_LIMIT);
+  for (const { curator, seedIndexes } of qualifiedCurators) {
+    const urn = String(curator.urn);
+    const username = cleanText(curator.username || curator.permalink, 200) || 'SoundCloud listener';
+    const hitCount = seedIndexes.size;
+    const likesUrl = new URL(`https://api.soundcloud.com/users/${encodeURIComponent(urn)}/likes/tracks`);
+    likesUrl.searchParams.set('access', 'playable,preview');
+    likesUrl.searchParams.set('limit', String(SOUNDCLOUD_SHELF_TRACK_LIMIT));
+    likesUrl.searchParams.set('linked_partitioning', 'true');
+    try {
+      const likedTracks = soundcloudTrackCollection(soundcloudCollection(await fetcher(likesUrl)), SOUNDCLOUD_SHELF_TRACK_LIMIT);
+      addSoundcloudTrackShelf({
+        tracks: likedTracks,
+        seeds,
+        items,
+        shelves,
+        source: `SoundCloud likes · ${username}`,
+        why: `${username} liked ${hitCount} distinct tracks from the ${seeds.length}-track shortlist.`,
+        confidence: Math.min(96, 86 + ((hitCount - 2) * 4)),
+      });
+    } catch (error) {
+      errors.push(`likes for ${username}: ${error.message}`);
+    }
+
+    const playlistsUrl = new URL(`https://api.soundcloud.com/users/${encodeURIComponent(urn)}/playlists`);
+    playlistsUrl.searchParams.set('show_tracks', 'true');
+    playlistsUrl.searchParams.set('limit', String(SOUNDCLOUD_USER_PLAYLIST_LIMIT));
+    playlistsUrl.searchParams.set('linked_partitioning', 'true');
+    try {
+      const playlistPage = await fetcher(playlistsUrl);
+      for (const playlist of soundcloudCollection(playlistPage).slice(0, SOUNDCLOUD_USER_PLAYLIST_LIMIT)) {
+        await addSoundcloudPlaylistShelf({
+          playlist, seeds, fetcher, items, shelves,
+        });
+      }
+    } catch (error) {
+      errors.push(`playlists for ${username}: ${error.message}`);
+    }
+  }
+
+  const report = shelves.size
+    ? `SoundCloud shelf discovery: scanned ${curatorOverlaps.size} profiles and qualified ${shelves.size} public user likes/playlist ${shelves.size === 1 ? 'shelf' : 'shelves'} with at least two distinct hits from the ${seeds.length}-track shortlist. Algorithmic radios were not used.`
+    : `SoundCloud shelf discovery scanned ${curatorOverlaps.size} profiles but found no public user likes or playlists with at least two distinct hits from the ${seeds.length}-track shortlist. One shared track is not treated as shelf evidence.`;
+  if (errors.length) console.warn(`SoundCloud shelf discovery partial failures: ${errors.join('; ')}`);
+  return { items, shelves: [...shelves], profilesScanned: curatorOverlaps.size, errors, report };
+}
+
+async function soundcloudPlaylistTracks(playlist, fetcher) {
+  const urn = String(playlist?.urn || '');
+  if (!/^soundcloud:playlists:[A-Za-z0-9]+$/.test(urn)) return [];
+  let tracks = soundcloudTrackCollection(playlist.tracks, SOUNDCLOUD_SHELF_TRACK_LIMIT);
+  if (!tracks.length) {
+    const tracksUrl = new URL(`https://api.soundcloud.com/playlists/${encodeURIComponent(urn)}/tracks`);
+    tracksUrl.searchParams.set('linked_partitioning', 'true');
+    tracks = soundcloudTrackCollection(soundcloudCollection(await fetcher(tracksUrl)), SOUNDCLOUD_SHELF_TRACK_LIMIT);
+  }
+  return tracks;
+}
+
+async function addSoundcloudPlaylistShelf({ playlist, tracks: suppliedTracks, seeds, fetcher, items, shelves }) {
+  const tracks = suppliedTracks || await soundcloudPlaylistTracks(playlist, fetcher);
+  if (!tracks.length) return;
+  const hitCount = soundcloudShelfSeedHits(tracks, seeds).size;
+  if (hitCount < 2) return;
+  const title = cleanText(playlist.title, 300) || 'Untitled playlist';
+  const owner = cleanText(playlist.user?.username, 200) || 'SoundCloud user';
+  addSoundcloudTrackShelf({
+    tracks,
+    seeds,
+    items,
+    shelves,
+    source: `SoundCloud playlist · ${title} · ${owner}`,
+    why: `${owner}'s hand-made SoundCloud playlist “${title}” contains ${hitCount} distinct tracks from the ${seeds.length}-track shortlist.`,
+    confidence: Math.min(98, 90 + ((hitCount - 2) * 3)),
+  });
+}
+
+function addSoundcloudTrackShelf({ tracks, seeds, items, shelves, source, why, confidence }) {
+  let added = 0;
+  for (const track of tracks) {
+    if (seeds.some((seed) => soundcloudTrackIsSeed(track, seed))) continue;
+    try {
+      const candidate = soundcloudCandidateFromTrack(track);
+      candidate.sources = [source];
+      candidate.shelf_confidence = confidence;
+      candidate.discovery_distance = 'one SoundCloud shelf hop';
+      candidate.why = why;
+      items.push(candidate);
+      added += 1;
+    } catch { /* Ignore malformed or non-public tracks inside otherwise usable shelves. */ }
+  }
+  if (added) shelves.add(source);
+}
+
+function soundcloudSeed(value, trackSeed) {
+  const cleaned = cleanText(value, 500);
+  if (!trackSeed) return { value: cleaned, artist: cleaned, title: '', trackSeed: false };
+  const parts = cleaned.split(/\s+[-–—]\s+/, 2);
+  return parts.length === 2
+    ? { value: cleaned, artist: parts[0], title: parts[1], trackSeed: true }
+    : { value: cleaned, artist: '', title: cleaned, trackSeed: true };
+}
+
+function soundcloudTrackIdentity(track) {
+  const publisher = track?.publisher_metadata && typeof track.publisher_metadata === 'object' ? track.publisher_metadata : {};
+  const artist = cleanText(track?.metadata_artist || publisher.artist || track?.user?.username, 300);
+  let title = cleanText(publisher.release_title || track?.title, 500);
+  const prefix = `${artist} - `;
+  if (artist && title.toLowerCase().startsWith(prefix.toLowerCase())) title = title.slice(prefix.length).trim();
+  return { artist, title };
+}
+
+function soundcloudTrackMatchesSeed(track, seed) {
+  const identity = soundcloudTrackIdentity(track);
+  if (!seed.trackSeed) {
+    const wanted = normalizedMatchText(seed.artist);
+    const actual = normalizedMatchText(identity.artist);
+    return Boolean(wanted && actual && (actual === wanted || actual.includes(wanted) || wanted.includes(actual)));
+  }
+  if (seed.artist) return isStrictSoundcloudMatch({ artist: seed.artist, title: seed.title }, track);
+  return titleVariants(identity.title, identity.artist).has(normalizedMatchText(seed.title));
+}
+
+function soundcloudTrackIsSeed(track, seed) {
+  return seed.trackSeed && soundcloudTrackMatchesSeed(track, seed);
+}
+
+function soundcloudShelfSeedHits(tracks, seeds) {
+  const hits = new Set();
+  for (const [index, seed] of seeds.entries()) {
+    if (tracks.some((track) => soundcloudTrackMatchesSeed(track, seed))) hits.add(index);
+  }
+  return hits;
+}
+
+function soundcloudCollection(value) {
+  if (Array.isArray(value)) return value;
+  return Array.isArray(value?.collection) ? value.collection : [];
+}
+
+function soundcloudTrackCollection(value, limit) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => item?.track || item)
+    .filter((track) => track?.kind === 'track' && track.access !== 'blocked')
+    .slice(0, limit);
+}
+
+export function soundcloudCandidateFromTrack(track, sourceIndex = 1) {
+  const publisher = track?.publisher_metadata && typeof track.publisher_metadata === 'object' ? track.publisher_metadata : {};
+  const artist = cleanText(track?.metadata_artist || publisher.artist || track?.user?.username, 300);
+  let title = cleanText(publisher.release_title || track?.title, 500);
+  const prefix = `${artist} - `;
+  if (artist && title.toLowerCase().startsWith(prefix.toLowerCase())) title = title.slice(prefix.length).trim();
+  const soundcloudUrl = safeExternalUrl(track?.permalink_url, 'soundcloud.com');
+  const soundcloudUrn = /^soundcloud:tracks:[A-Za-z0-9]+$/.test(String(track?.urn || '')) ? track.urn : null;
+  if (!artist || !title || !soundcloudUrl || !soundcloudUrn) throw new Error('Official SoundCloud track metadata was incomplete.');
+  return {
+    artist,
+    title,
+    album: cleanText(publisher.album_title, 500) || null,
+    spotify_uri: null,
+    soundcloud_urn: soundcloudUrn,
+    soundcloud_url: soundcloudUrl,
+    musicbrainz_id: null,
+    shelf_confidence: 85,
+    recording_confidence: 90,
+    discovery_distance: 'directly supplied',
+    sources: [`soundcloud_official_${sourceIndex}`],
+    why: 'Shown because it came directly from the explicitly supplied SoundCloud source through the official API.',
+  };
+}
+
+export function mergeHydratedCandidates(items) {
+  const merged = new Map();
+  for (const item of items) {
+    const artist = cleanText(item.artist, 300);
+    const title = cleanText(item.title, 500);
+    if (!artist || !title) continue;
+    const key = `${normalizedMatchText(artist)}\n${normalizedMatchText(title)}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...item, sources: Array.isArray(item.sources) ? [...item.sources] : [] });
+      continue;
+    }
+    existing.album ||= item.album || null;
+    existing.spotify_uri ||= item.spotify_uri || null;
+    existing.soundcloud_urn ||= item.soundcloud_urn || null;
+    existing.soundcloud_url ||= item.soundcloud_url || null;
+    existing.musicbrainz_id ||= item.musicbrainz_id || null;
+    existing.shelf_confidence = Math.max(Number(existing.shelf_confidence) || 0, Number(item.shelf_confidence) || 0);
+    existing.recording_confidence = Math.max(Number(existing.recording_confidence) || 0, Number(item.recording_confidence) || 0);
+    existing.sources = [...new Set([...(existing.sources || []), ...(item.sources || [])])];
+    if (existing.sources.length > 1) {
+      existing.why = `Shown because ${existing.sources.length} independent sources exposed the same recording.`;
+    }
+  }
+  return [...merged.values()];
+}
+
+export function chooseDiscoveryMode(requestedMode, input, parsed = parseDiscoveryInput(input)) {
+  if (requestedMode === 'discover' || requestedMode === 'distill') return requestedMode;
+  const nonUrlLines = String(input || '').split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^https?:\/\//i.test(line));
+  return parsed.urls.length === 0 && parsed.seeds.length >= 2 && nonUrlLines.length <= SOUNDCLOUD_DISCOVERY_SEED_LIMIT
+    ? 'discover'
+    : 'distill';
 }
 
 async function createDiscoveryPlaylist(req, res) {
@@ -285,6 +694,55 @@ async function createDiscoveryPlaylist(req, res) {
     uris,
   });
   return json(res, 201, { playlist, added: uris.length, unresolved: selectedItems.length - uris.length });
+}
+
+async function resolveDiscoveryPlayback(req, res) {
+  const body = await readJson(req);
+  pruneRuns();
+  const run = discoveryRuns.get(String(body.runId || ''));
+  if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before playing tracks.' });
+  const archiveId = cleanText(body.archiveId, 200);
+  const candidate = run.items.find((item) => candidateArchiveId(item) === archiveId);
+  if (!candidate) return json(res, 404, { error: 'That candidate does not belong to this discovery run.' });
+
+  let playback = playbackChoice(candidate);
+  let soundcloudAttempted = false;
+  if (playback?.provider !== 'soundcloud' && existsSync(soundcloudTokenPath)) {
+    soundcloudAttempted = true;
+    try {
+      playback = playbackChoice(candidate, await resolveSoundcloudCandidate(candidate));
+    } catch (error) {
+      console.warn(`SoundCloud playback resolution failed; using fallback: ${error.message}`);
+    }
+  }
+  if (!playback) {
+    return json(res, 422, {
+      error: soundcloudAttempted
+        ? 'No strict playable SoundCloud match or Spotify fallback was available.'
+        : 'No known playable source. Connect SoundCloud to try strict resolution.',
+    });
+  }
+  return json(res, 200, { ...playback, soundcloudAttempted });
+}
+
+export function playbackChoice(candidate, resolvedSoundcloudTrack = null) {
+  const directSoundcloudUrl = safeExternalUrl(candidate?.soundcloud_url, 'soundcloud.com');
+  if (directSoundcloudUrl) {
+    return { provider: 'soundcloud', url: directSoundcloudUrl, resolution: 'candidate' };
+  }
+  const resolvedSoundcloudUrl = safeExternalUrl(resolvedSoundcloudTrack?.permalink_url, 'soundcloud.com');
+  if (resolvedSoundcloudUrl && isStrictSoundcloudMatch(candidate, resolvedSoundcloudTrack)) {
+    return { provider: 'soundcloud', url: resolvedSoundcloudUrl, resolution: 'strict-search' };
+  }
+  const spotifyUri = String(candidate?.spotify_uri || '');
+  if (/^spotify:track:[A-Za-z0-9]+$/.test(spotifyUri)) {
+    return {
+      provider: 'spotify',
+      url: `https://open.spotify.com/track/${spotifyUri.split(':').at(-1)}`,
+      resolution: 'fallback',
+    };
+  }
+  return null;
 }
 
 async function soundcloudSearch(url, res) {
@@ -311,8 +769,8 @@ async function createSoundcloudDiscoveryPlaylist(req, res) {
 }
 
 export async function publishSoundcloudCandidates({ name, candidates, isPublic = false }) {
-  if (!Array.isArray(candidates) || !candidates.length || candidates.length > 100) {
-    const error = new Error('SoundCloud publishing requires one to one hundred reviewed candidates.');
+  if (!Array.isArray(candidates) || !candidates.length || candidates.length > MAX_SOUNDCLOUD_PLAYLIST_TRACKS) {
+    const error = new Error(`SoundCloud publishing requires one to ${MAX_SOUNDCLOUD_PLAYLIST_TRACKS} reviewed candidates.`);
     error.status = 400;
     throw error;
   }
@@ -343,43 +801,53 @@ export async function publishSoundcloudCandidates({ name, candidates, isPublic =
   };
 }
 
-async function archiveCandidate(req, res) {
+async function recordTasteJudgment(req, res) {
   const body = await readJson(req);
   pruneRuns();
   const run = discoveryRuns.get(String(body.runId || ''));
-  if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before archiving metadata.' });
+  if (!run) return json(res, 410, { error: 'This discovery run expired. Run discovery again before teaching the profile.' });
   const archiveId = cleanText(body.archiveId, 200);
+  const preference = body.preference === 'keep' || body.preference === 'skip' ? body.preference : null;
+  if (!preference) return json(res, 400, { error: 'Taste preference must be keep or skip.' });
   const candidate = run.items.find((item) => candidateArchiveId(item) === archiveId);
   if (!candidate) return json(res, 404, { error: 'That candidate does not belong to this discovery run.' });
 
-  const result = await queueLibraryWrite(async () => {
-    const tracks = await readSavedTracks();
-    const existing = tracks.find((item) => item.archive_id === archiveId);
-    if (existing) return { track: existing, created: false };
-    if (tracks.length >= MAX_SAVED_TRACKS) {
-      const error = new Error(`The explicit metadata archive is limited to ${MAX_SAVED_TRACKS} tracks.`);
+  const result = await queueTasteProfileWrite(async () => {
+    const judgments = await readTasteProfile();
+    const existingIndex = judgments.findIndex((item) => item.archive_id === archiveId);
+    const judgment = tasteJudgmentSnapshot(candidate, preference, existingIndex >= 0 ? judgments[existingIndex].created_at : undefined);
+    if (existingIndex >= 0) judgments.splice(existingIndex, 1);
+    else if (judgments.length >= MAX_TASTE_JUDGMENTS) {
+      const error = new Error(`The taste profile is limited to ${MAX_TASTE_JUDGMENTS} explicit judgments.`);
       error.status = 409;
       throw error;
     }
-    const track = metadataSnapshot(candidate);
-    tracks.unshift(track);
-    await writeSavedTracks(savedTracksPath, tracks);
-    return { track, created: true };
+    judgments.unshift(judgment);
+    await writeTasteProfile(tasteProfilePath, judgments);
+    return { judgment, judgments };
   });
-  return json(res, result.created ? 201 : 200, { ...result, usedForRanking: false });
+  return json(res, 200, { judgment: result.judgment, profile: tasteProfileDocument(result.judgments) });
 }
 
-async function removeArchivedCandidate(url, res) {
-  const archiveId = decodeURIComponent(url.pathname.slice('/api/library/'.length));
-  if (!archiveId || archiveId.length > 200) return json(res, 400, { error: 'Invalid archive identifier.' });
-  const removed = await queueLibraryWrite(async () => {
-    const tracks = await readSavedTracks();
-    const remaining = tracks.filter((item) => item.archive_id !== archiveId);
-    if (remaining.length === tracks.length) return false;
-    await writeSavedTracks(savedTracksPath, remaining);
-    return true;
+async function removeTasteJudgment(url, res) {
+  const archiveId = decodeURIComponent(url.pathname.slice('/api/profile/judgments/'.length));
+  if (!archiveId || archiveId.length > 200) return json(res, 400, { error: 'Invalid taste judgment identifier.' });
+  const result = await queueTasteProfileWrite(async () => {
+    const judgments = await readTasteProfile();
+    const remaining = judgments.filter((item) => item.archive_id !== archiveId);
+    if (remaining.length === judgments.length) return null;
+    await writeTasteProfile(tasteProfilePath, remaining);
+    return remaining;
   });
-  return removed ? json(res, 200, { removed: archiveId }) : json(res, 404, { error: 'Saved metadata not found.' });
+  return result ? json(res, 200, tasteProfileDocument(result)) : json(res, 404, { error: 'Taste judgment not found.' });
+}
+
+async function eraseTasteProfile(res) {
+  const judgments = await queueTasteProfileWrite(async () => {
+    await writeTasteProfile(tasteProfilePath, []);
+    return [];
+  });
+  return json(res, 200, tasteProfileDocument(judgments));
 }
 
 async function writePlaylist({ name, description, isPublic, uris }) {
@@ -406,18 +874,18 @@ export function parseDiscoveryInput(input) {
       if (looksLikeTrack(line)) seeds.push(line);
     }
   }
-  if (seeds.length >= 2) return { seedType: '--tracks', seeds: seeds.slice(0, 4), urls, text: textLines.join('\n') };
+  if (seeds.length >= 1) return { seedType: '--tracks', seeds: seeds.slice(0, SOUNDCLOUD_DISCOVERY_SEED_LIMIT), urls, text: textLines.join('\n') };
   const artistSeeds = lines
     .filter((line) => !/^https?:\/\//i.test(line))
     .flatMap((line) => line.split(/\s+[+&]\s+|,\s*/))
     .map((line) => line.trim()).filter(Boolean);
-  return { seedType: '--artists', seeds: artistSeeds.slice(0, 4), urls, text: textLines.join('\n') };
+  return { seedType: '--artists', seeds: artistSeeds.slice(0, SOUNDCLOUD_DISCOVERY_SEED_LIMIT), urls, text: textLines.join('\n') };
 }
 
 export function parseLength(value) {
   const length = Number(value ?? 30);
-  if (!Number.isInteger(length) || length < 5 || length > 60) {
-    const error = new Error('Playlist length must be a whole number from 5 to 60.');
+  if (!Number.isInteger(length) || length < 5 || length > MAX_PLAYLIST_LENGTH) {
+    const error = new Error(`Playlist length must be a whole number from 5 to ${MAX_PLAYLIST_LENGTH}.`);
     error.status = 400;
     throw error;
   }
@@ -426,8 +894,8 @@ export function parseLength(value) {
 
 export function selectRunItems(items, archiveIds) {
   if (archiveIds === undefined || archiveIds === null) return items;
-  if (!Array.isArray(archiveIds) || archiveIds.length > 60) {
-    const error = new Error('Current mix selection must be a list of at most 60 candidates.');
+  if (!Array.isArray(archiveIds) || archiveIds.length > MAX_PLAYLIST_LENGTH) {
+    const error = new Error(`Current mix selection must be a list of at most ${MAX_PLAYLIST_LENGTH} candidates.`);
     error.status = 400;
     throw error;
   }
@@ -495,6 +963,15 @@ export function isStrictSoundcloudMatch(candidate, track) {
 }
 
 export async function resolveSoundcloudCandidate(candidate) {
+  const directUrl = safeExternalUrl(candidate?.soundcloud_url, 'soundcloud.com');
+  if (directUrl) {
+    const resolveUrl = new URL('https://api.soundcloud.com/resolve');
+    resolveUrl.searchParams.set('url', directUrl);
+    const resolved = await soundcloudFetch(resolveUrl);
+    if (resolved?.kind === 'track' && typeof resolved.urn === 'string' && isStrictSoundcloudMatch(candidate, resolved)) {
+      return resolved;
+    }
+  }
   const query = cleanText(`${candidate.artist} ${candidate.title}`, 500);
   if (!query) return null;
   const searchUrl = new URL('https://api.soundcloud.com/tracks');
@@ -556,6 +1033,7 @@ function publicCandidate(item) {
     title: cleanText(item.title, 500),
     album: cleanText(item.album, 500),
     spotify_uri: /^spotify:track:[A-Za-z0-9]+$/.test(String(item.spotify_uri || '')) ? item.spotify_uri : null,
+    soundcloud_urn: /^soundcloud:tracks:[A-Za-z0-9]+$/.test(String(item.soundcloud_urn || '')) ? item.soundcloud_urn : null,
     soundcloud_url: safeExternalUrl(item.soundcloud_url, 'soundcloud.com'),
     musicbrainz_id: /^[0-9a-f-]{36}$/i.test(String(item.musicbrainz_id || '')) ? item.musicbrainz_id : null,
     shelf_confidence: boundedNumber(item.shelf_confidence),
@@ -563,6 +1041,9 @@ function publicCandidate(item) {
     discovery_distance: cleanText(item.discovery_distance || 'one shelf away', 80),
     sources: Array.isArray(item.sources) ? item.sources.map((source) => cleanText(source, 200)).slice(0, 12) : [],
     why: cleanText(item.why, 1000),
+    taste_preference: item.taste_preference === 'keep' || item.taste_preference === 'skip' ? item.taste_preference : null,
+    taste_adjustment: Math.max(-100, Math.min(100, Number(item.taste_adjustment) || 0)),
+    taste_reasons: Array.isArray(item.taste_reasons) ? item.taste_reasons.map((reason) => cleanText(reason, 200)).slice(0, 6) : [],
   };
 }
 function boundedNumber(value) { return Math.max(0, Math.min(100, Number(value) || 0)); }
@@ -575,13 +1056,16 @@ export function candidateArchiveId(item) {
   const identity = `${cleanText(item.artist, 300).toLowerCase()}\n${cleanText(item.title, 500).toLowerCase()}`;
   return `metadata:${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32)}`;
 }
-export function metadataSnapshot(item, savedAt = new Date().toISOString()) {
+export function tasteJudgmentSnapshot(item, preference, createdAt, updatedAt = new Date().toISOString()) {
+  if (preference !== 'keep' && preference !== 'skip') throw new Error('Taste preference must be keep or skip.');
   const candidate = publicCandidate(item);
   if (!candidate.artist || !candidate.title) throw new Error('Candidate metadata is incomplete.');
   return {
     schema_version: 1,
     archive_id: candidate.archive_id,
-    saved_at: savedAt,
+    preference,
+    created_at: createdAt || updatedAt,
+    updated_at: updatedAt,
     artist: candidate.artist,
     title: candidate.title,
     album: candidate.album || null,
@@ -589,35 +1073,138 @@ export function metadataSnapshot(item, savedAt = new Date().toISOString()) {
     soundcloud_url: candidate.soundcloud_url,
     musicbrainz_id: candidate.musicbrainz_id,
     sources: candidate.sources,
-    note: 'Explicit metadata archive; not used for ranking.',
   };
 }
-export async function readSavedTracks(filePath = savedTracksPath) {
+
+export async function readTasteProfile(filePath = tasteProfilePath) {
   try {
     const payload = JSON.parse(await readFile(filePath, 'utf8'));
-    if (payload?.schema_version !== 1 || !Array.isArray(payload.tracks)) {
-      throw new Error('Saved metadata archive has an unsupported format.');
+    if (payload?.schema_version !== 1 || !Array.isArray(payload.judgments)) {
+      throw new Error('Taste profile has an unsupported format.');
     }
-    return payload.tracks;
+    return payload.judgments;
   } catch (error) {
     if (error.code === 'ENOENT') return [];
     throw error;
   }
 }
-export async function writeSavedTracks(filePath, tracks) {
+
+export async function writeTasteProfile(filePath, judgments) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   await writeFile(temporary, `${JSON.stringify({
     schema_version: 1,
-    purpose: 'Explicitly saved track metadata. Never used for ranking.',
-    tracks,
+    purpose: 'Local explicit taste judgments used to personalize QRator ranking.',
+    judgments,
   }, null, 2)}\n`, { mode: 0o600 });
   await chmod(temporary, 0o600);
   await rename(temporary, filePath);
 }
-function queueLibraryWrite(action) {
-  const next = libraryWrite.then(action, action);
-  libraryWrite = next.catch(() => {});
+
+export function tasteProfileDocument(judgments) {
+  return {
+    schema_version: 1,
+    purpose: 'Local explicit taste judgments used to personalize QRator ranking.',
+    usedForRanking: true,
+    summary: summarizeTasteProfile(judgments),
+    judgments,
+  };
+}
+
+export function summarizeTasteProfile(judgments) {
+  const artistStats = aggregateTaste(judgments, (item) => [item.artist]);
+  const sourceStats = aggregateTaste(judgments, (item) => item.sources || []);
+  return {
+    total: judgments.length,
+    kept: judgments.filter((item) => item.preference === 'keep').length,
+    skipped: judgments.filter((item) => item.preference === 'skip').length,
+    artists: [...artistStats.values()].sort(tasteStatOrder).slice(0, 20),
+    sources: [...sourceStats.values()].sort(tasteStatOrder).slice(0, 20),
+  };
+}
+
+export function rankCandidatesForTaste(items, judgments) {
+  const byTrack = new Map(judgments.map((item) => [item.archive_id, item]));
+  const byArtist = aggregateTaste(judgments, (item) => [item.artist]);
+  const bySource = aggregateTaste(judgments, (item) => item.sources || []);
+  return items.map((item, index) => {
+    const candidate = publicCandidate(item);
+    const exact = byTrack.get(candidate.archive_id);
+    const artist = byArtist.get(normalizedTasteKey(candidate.artist));
+    const sourceSignals = candidate.sources.map((source) => bySource.get(normalizedTasteKey(source))).filter(Boolean);
+    let adjustment = exact?.preference === 'keep' ? 30 : exact?.preference === 'skip' ? -30 : 0;
+    const reasons = [];
+    if (exact) reasons.push(exact.preference === 'keep' ? 'you marked this track more like you' : 'you marked this track less like you');
+    if (artist?.total) {
+      const influence = tasteInfluence(artist, 12, 3);
+      adjustment += influence;
+      if (influence) reasons.push(`${influence > 0 ? 'positive' : 'negative'} history with ${candidate.artist}`);
+    }
+    if (sourceSignals.length) {
+      const sourceInfluence = sourceSignals.reduce((sum, stat) => sum + tasteInfluence(stat, 6, 1.5), 0) / sourceSignals.length;
+      adjustment += sourceInfluence;
+      if (Math.abs(sourceInfluence) >= 0.5) reasons.push(`${sourceInfluence > 0 ? 'positive' : 'negative'} history with this source`);
+    }
+    return {
+      ...item,
+      taste_preference: exact?.preference || null,
+      taste_adjustment: Math.round(adjustment * 10) / 10,
+      taste_reasons: reasons,
+      _taste_order: boundedNumber(item.shelf_confidence) + adjustment,
+      _original_order: index,
+    };
+  }).sort((a, b) => b._taste_order - a._taste_order || a._original_order - b._original_order)
+    .map(({ _taste_order, _original_order, ...item }) => item);
+}
+
+export function diversifyAcrossShelves(items, length) {
+  const target = Math.max(0, Math.min(items.length, Number(length) || 0));
+  const remaining = [...items];
+  const selected = [];
+  const sourceCounts = new Map();
+  for (let cap = 1; selected.length < target && remaining.length; cap += 1) {
+    for (let index = 0; index < remaining.length && selected.length < target;) {
+      const candidate = remaining[index];
+      const sources = candidate.sources?.length ? [...new Set(candidate.sources)] : ['Unlabeled shelf'];
+      if (sources.every((source) => (sourceCounts.get(source) || 0) >= cap)) {
+        index += 1;
+        continue;
+      }
+      selected.push(candidate);
+      remaining.splice(index, 1);
+      for (const source of sources) sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
+    }
+  }
+  return selected;
+}
+
+function aggregateTaste(judgments, valuesFor) {
+  const stats = new Map();
+  for (const judgment of judgments) {
+    const uniqueValues = new Set(valuesFor(judgment).map((value) => cleanText(value, 300)).filter(Boolean));
+    for (const label of uniqueValues) {
+      const key = normalizedTasteKey(label);
+      const stat = stats.get(key) || { label, kept: 0, skipped: 0, total: 0, net: 0 };
+      if (judgment.preference === 'keep') stat.kept += 1;
+      if (judgment.preference === 'skip') stat.skipped += 1;
+      stat.total += 1;
+      stat.net = stat.kept - stat.skipped;
+      stats.set(key, stat);
+    }
+  }
+  return stats;
+}
+
+function normalizedTasteKey(value) { return normalizedMatchText(value); }
+function tasteInfluence(stat, cap, perJudgment) {
+  if (!stat?.total) return 0;
+  return (stat.net / stat.total) * Math.min(cap, stat.total * perJudgment);
+}
+function tasteStatOrder(a, b) { return Math.abs(b.net) - Math.abs(a.net) || b.total - a.total || a.label.localeCompare(b.label); }
+
+function queueTasteProfileWrite(action) {
+  const next = tasteProfileWrite.then(action, action);
+  tasteProfileWrite = next.catch(() => {});
   return next;
 }
 function safeExternalUrl(value, hostname) {
@@ -629,7 +1216,7 @@ function safeExternalUrl(value, hostname) {
 
 async function spotifyProxy(res, url) { return json(res, 200, await spotifyFetch(url)); }
 
-async function spotifyFetch(url, options = {}) {
+export async function spotifyFetch(url, options = {}) {
   await assertProviderReady('spotify');
   const token = await getValidToken();
   const response = await fetch(url, {
@@ -801,7 +1388,7 @@ function html(res, status, body) { res.writeHead(status, { 'Content-Type': 'text
 function page(title, body) { return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/styles.css"></head><body><main class="callback">${body}</main></body></html>`; }
 function escapeHtml(value) { return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;'); }
 function setSecurityHeaders(res) {
-  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src https://w.soundcloud.com https://open.spotify.com; base-uri 'none'; frame-ancestors 'none'");
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');

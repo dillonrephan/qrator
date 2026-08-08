@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -12,7 +11,6 @@ from music_harvester.engine.normalize import normalize_key, split_artist_track
 from music_harvester.http import ApiError
 from music_harvester.models import RawTrack, SourceConfig
 from music_harvester.sources import SourceUnavailable, adapter_for
-from music_harvester.sources.lastfm import LastFmClient
 from music_harvester.sources.listenbrainz import listenbrainz_username
 
 
@@ -116,36 +114,10 @@ def candidate_sources(seeds: list[dict], source_urls: list[str], files: list[str
             seen.add(key)
             sources.append(SourceConfig(name=f"bridge_text_{index}", platform="manual", source_type="manual_seed", url=text, weight=3.0, category="pasted_text"))
 
-    if search_limit > 0:
-        radio_artists = list(
-            dict.fromkeys(seed["artist"] for seed in seeds if seed.get("artist"))
-        )[:4]
-        for index, artist in enumerate(radio_artists, 1):
-            sources.append(
-                SourceConfig(
-                    name=slug(f"listenbrainz_radio_{index}_{artist}"),
-                    platform="listenbrainz",
-                    source_type="listenbrainz_radio",
-                    url=artist,
-                    weight=2.4,
-                    category="structured_api",
-                )
-            )
-
-        try:
-            lastfm = LastFmClient()
-            if not lastfm.api_key:
-                raise SourceUnavailable("LASTFM_API_KEY is not configured")
-            for index, seed in enumerate((item for item in seeds if item.get("artist") and item.get("title")), 1):
-                locator = f"{seed['artist']}\n{seed['title']}"
-                sources.append(SourceConfig(name=f"bridge_lastfm_similar_{index}", platform="lastfm", source_type="lastfm_similar_tracks", url=locator, weight=2.6, category="structured_api"))
-        except Exception as exc:
-            sources = [source for source in sources if source.platform != "lastfm"]
-            notes.append(f"Last.fm discovery unavailable: {exc}")
-
+    if search_limit > 0 and seeds:
         notes.append(
-            f"ListenBrainz artist radio enabled for {len(radio_artists)} seed artist(s); "
-            "Spotify and unofficial SoundCloud crawling were not used for discovery."
+            "Algorithmic artist radio and similar-track feeds are disabled as shelf evidence; "
+            "seed expansion is delegated to bounded SoundCloud user likes and playlists."
         )
 
     return sources, notes
@@ -290,8 +262,3 @@ def write_bridge_sources_md(store: Store, bridge_run_id: int) -> None:
             f"| {escape_md(row['name'] or 'unknown')} | {escape_md(row['platform'] or '')} | {escape_md(row['match_type'])} | {float(row['confidence_score']):.1f} | {escape_md(sides)} | {escape_md(matched)} | {escape_md(row['notes'] or '')} |"
         )
     (output / "bridge_sources.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def slug(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", value.lower()).strip("_")
-    return cleaned[:80] or "bridge_source"

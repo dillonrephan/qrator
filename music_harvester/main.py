@@ -79,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_discovery_input_args(create_seeds)
     create_seeds.add_argument("--length", type=int, default=30)
     create_seeds.add_argument("--thorough", action="store_true")
+    create_seeds.add_argument("--search-limit", type=int, default=0)
     create_seeds.set_defaults(func=cmd_create_seeds)
 
     discover_seeds = sub.add_parser("discover-from-seeds")
@@ -252,7 +253,7 @@ def cmd_create_seeds(args: argparse.Namespace, store: Store) -> int:
         source_urls=args.source_url,
         files=args.file,
         texts=args.text,
-        search_limit=0,
+        search_limit=max(0, min(args.search_limit, 10)),
     )
     selected, rejected, candidates = generate_playlist(store, Path(args.config_dir), "balanced_discovery", args.length)
     write_outputs(store, selected, rejected, candidates, bridge=False)

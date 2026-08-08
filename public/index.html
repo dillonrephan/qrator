@@ -23,7 +23,7 @@
     <nav class="tabs" aria-label="Workspace views">
       <button class="tab active" type="button" data-view="discover">Discover</button>
       <button class="tab" type="button" data-view="manual">Manual mix</button>
-      <button class="tab" type="button" data-view="library">Saved metadata</button>
+      <button class="tab" type="button" data-view="profile">Taste profile</button>
     </nav>
 
     <main>
@@ -31,11 +31,11 @@
         <aside class="control-rail">
           <form id="discover-form">
             <div class="field-head"><label for="discover-query">Seeds and sources</label><span id="seed-count">0 lines</span></div>
-            <textarea id="discover-query" rows="11" maxlength="50000" placeholder="Try four artists, two tracks, an exported tracklist, or a source URL."></textarea>
+            <textarea id="discover-query" rows="11" maxlength="50000" placeholder="Try 2–20 tracks or artists so shelves can prove overlap, or add an exported tracklist/source URL."></textarea>
 
             <div class="field-row">
               <label for="playlist-length">Length</label>
-              <input id="playlist-length" type="number" min="5" max="60" value="30">
+              <input id="playlist-length" type="number" min="5" max="475" value="30">
             </div>
             <label class="toggle-row">
               <span><strong>Thorough scan</strong><small>Slower source processing</small></span>
@@ -50,6 +50,14 @@
             <div><p class="eyebrow">Current run</p><h2 id="result-title">No shortlist yet</h2></div>
             <div id="result-stats" class="stats"></div>
           </div>
+          <section id="player-shell" class="player-shell" aria-label="QRator player" hidden>
+            <div class="player-head">
+              <div><p id="player-provider" class="eyebrow">SoundCloud</p><h2 id="player-title">Nothing playing</h2><p id="player-artist"></p></div>
+              <div class="player-actions"><button id="player-fallback" class="text-button" type="button" hidden>Use Spotify instead</button><button id="player-close" class="text-button" type="button">Close player</button></div>
+            </div>
+            <div id="player-frame"></div>
+            <p id="player-status" class="player-status"></p>
+          </section>
           <div id="discover-empty" class="empty-state">
             <div class="signal" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
             <p>Your next shortlist will appear here.</p>
@@ -83,22 +91,25 @@
         </section>
       </section>
 
-      <section id="library-view" class="view">
-        <aside class="control-rail library-note">
-          <p class="eyebrow">Explicit local memory</p>
-          <h2>Saved metadata</h2>
-          <p>Only tracks whose <strong>Save this track’s metadata forever</strong> button you pressed appear here.</p>
-          <p>This archive is stored locally until you remove it or delete the local data. It is never used to rank recommendations.</p>
-          <button id="export-library" class="secondary wide" type="button">Export JSON</button>
+      <section id="profile-view" class="view">
+        <aside class="control-rail profile-note">
+          <p class="eyebrow">Your local signal</p>
+          <h2>Taste profile</h2>
+          <p>Every <strong>More like this</strong> or <strong>Less like this</strong> judgment teaches QRator. Track, artist, and source patterns influence the order of later discoveries.</p>
+          <p>The profile stays on this machine. You can inspect every judgment, export it, remove individual entries, or erase it completely.</p>
+          <button id="export-profile" class="secondary wide" type="button">Export profile JSON</button>
+          <button id="erase-profile" class="remove-button wide" type="button">Erase taste profile</button>
         </aside>
         <section class="results-workspace">
           <div class="results-header">
-            <div><p class="eyebrow">Local archive</p><h2 id="library-title">Nothing saved</h2></div>
-            <div id="library-stats" class="stats"></div>
+            <div><p class="eyebrow">Learned from explicit feedback</p><h2 id="profile-title">No taste signals yet</h2></div>
+            <div id="profile-stats" class="stats"></div>
           </div>
-          <div id="library-output" class="candidate-list"></div>
+          <div id="profile-summary"></div>
+          <div id="profile-output" class="candidate-list"></div>
         </section>
       </section>
+
     </main>
     <script src="/app.js" type="module"></script>
   </body>

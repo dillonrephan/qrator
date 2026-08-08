@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from music_harvester.engine.bridge import source_from_url
+from music_harvester.engine.bridge import candidate_sources, normalize_seeds, source_from_url
 from music_harvester.models import SourceConfig
 from music_harvester.sources.base import SourceUnavailable
 from music_harvester.sources.listenbrainz import (
@@ -68,6 +68,12 @@ class ListenBrainzSourceTests(unittest.TestCase):
         self.assertEqual(tracks[0].title, "Roads")
         self.assertEqual(tracks[0].album, "Dummy")
         self.assertEqual(tracks[0].payload["musicbrainz_id"], tracks[0].platform_track_id)
+
+    def test_seed_expansion_does_not_create_algorithmic_radio_shelves(self) -> None:
+        seeds = normalize_seeds([], ["Björk - Jóga"])
+        sources, notes = candidate_sources(seeds, [], [], [], search_limit=10)
+        self.assertEqual(sources, [])
+        self.assertIn("Algorithmic artist radio", notes[0])
 
     def test_accepts_only_canonical_listenbrainz_user_urls(self) -> None:
         self.assertEqual(

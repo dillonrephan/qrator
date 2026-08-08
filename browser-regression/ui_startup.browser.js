@@ -120,7 +120,7 @@ function send(res, status, contentType, body) {
   res.writeHead(status, {
     'Content-Type': contentType,
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' https:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-src https://w.soundcloud.com https://open.spotify.com; base-uri 'none'; frame-ancestors 'none'",
   });
   res.end(body);
 }
@@ -163,9 +163,28 @@ async function createMockServer() {
         redirectUri: 'http://127.0.0.1/callback',
       });
     }
-    if (req.method === 'GET' && url.pathname === '/api/library') {
-      if (scenario(req) === 'slow-library') await new Promise((resolve) => setTimeout(resolve, 600));
-      return json(res, 200, { tracks: [], usedForRanking: false, storage: 'synthetic test archive' });
+    if (req.method === 'GET' && url.pathname === '/api/profile') {
+      if (scenario(req) === 'slow-profile') await new Promise((resolve) => setTimeout(resolve, 600));
+      return json(res, 200, {
+        schema_version: 1,
+        usedForRanking: true,
+        summary: { total: 0, kept: 0, skipped: 0, artists: [], sources: [] },
+        judgments: [],
+      });
+    }
+    if (req.method === 'PUT' && url.pathname === '/api/profile/judgments') {
+      return json(res, 200, {
+        judgment: { archive_id: 'synthetic-first', preference: 'keep' },
+        profile: {
+          schema_version: 1,
+          usedForRanking: true,
+          summary: { total: 1, kept: 1, skipped: 0, artists: [], sources: [] },
+          judgments: [],
+        },
+      });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/discover/playback') {
+      return json(res, 422, { error: 'Synthetic playback unavailable.' });
     }
     if (req.method === 'POST' && url.pathname === '/api/discover') {
       if (scenario(req) === 'successful-discovery') {
@@ -281,7 +300,7 @@ test('startup I/O cannot block handlers or credential-free discovery', { timeout
       { width: 1920, height: 1080 },
       { width: 1280, height: 720 },
     ];
-    const modes = ['failed-status', 'non-json-status', 'slow-status', 'slow-library'];
+    const modes = ['failed-status', 'non-json-status', 'slow-status', 'slow-profile'];
 
     for (const viewport of viewports) {
       for (const mode of modes) {
@@ -313,22 +332,22 @@ test('startup I/O cannot block handlers or credential-free discovery', { timeout
         assert.equal(early.buttonDisabled, true, `${mode} ${viewport.width}: credential-free discovery handler should run`);
 
         if (mode === 'failed-status' || mode === 'non-json-status') {
-          await waitFor(cdp, sessionId, `document.querySelector('#status').textContent.includes('Credential-free ListenBrainz discovery ready')`);
+          await waitFor(cdp, sessionId, `document.querySelector('#status').textContent.includes('SoundCloud user-shelf discovery status unknown')`);
           const degraded = await evaluate(cdp, sessionId, `({
             status: document.querySelector('#status').textContent,
-            library: document.querySelector('#library-output').textContent
+            profile: document.querySelector('#profile-output').textContent
           })`);
           assert.equal(
             degraded.status,
-            'Spotify status unavailable / Credential-free ListenBrainz discovery ready',
+            'Provider status unavailable / SoundCloud user-shelf discovery status unknown',
           );
-          assert.match(degraded.library, /Save a candidate explicitly/);
+          assert.match(degraded.profile, /Judge tracks in Discover/);
         } else {
           await waitFor(cdp, sessionId, `document.querySelector('#status').textContent.includes('Spotify credentials required')`);
           const successfulStatus = await evaluate(cdp, sessionId, `document.querySelector('#status').textContent`);
-          assert.equal(successfulStatus, 'Spotify credentials required / ListenBrainz discovery ready');
-          if (mode === 'slow-library') {
-            await waitFor(cdp, sessionId, `document.querySelector('#library-output').textContent.includes('Save a candidate explicitly')`);
+          assert.equal(successfulStatus, 'Spotify credentials required / SoundCloud credentials required / Connect SoundCloud for user-shelf discovery');
+          if (mode === 'slow-profile') {
+            await waitFor(cdp, sessionId, `document.querySelector('#profile-output').textContent.includes('Judge tracks in Discover')`);
           }
         }
       }
@@ -394,6 +413,41 @@ test('startup I/O cannot block handlers or credential-free discovery', { timeout
       assert.ok(
         after.shortlistTop >= 0 && after.shortlistTop < viewport.height,
         `${viewport.width}: shortlist should start inside the viewport`,
+      );
+
+      const publishActions = await evaluate(cdp, sessionId, `([...document.querySelectorAll('.result-actions button')].map((button) => button.textContent))`);
+      assert.equal(publishActions.includes('Publish to SoundCloud'), true, `${viewport.width}: SoundCloud publishing should be a first-class shortlist action`);
+      await evaluate(cdp, sessionId, `([...document.querySelectorAll('.result-actions button')].find((button) => button.textContent === 'Publish to SoundCloud').click())`);
+      assert.equal(
+        await evaluate(cdp, sessionId, `document.querySelector('.publish-bar button[type="submit"]').textContent`),
+        'Publish 2 to SoundCloud',
+        `${viewport.width}: SoundCloud publish form should target the current reviewed mix directly`,
+      );
+
+      await evaluate(cdp, sessionId, `document.querySelector('.play-button').click()`);
+      await waitFor(cdp, sessionId, `document.querySelector('#player-provider').textContent === 'Playback unavailable'`);
+      const playerFailure = await evaluate(cdp, sessionId, `({
+        visible: !document.querySelector('#player-shell').hidden,
+        status: document.querySelector('#player-status').textContent,
+        frames: document.querySelectorAll('#player-frame iframe').length
+      })`);
+      assert.equal(playerFailure.visible, true, `${viewport.width}: play action should open the stable player panel`);
+      assert.equal(playerFailure.status, 'Synthetic playback unavailable.');
+      assert.equal(playerFailure.frames, 0, `${viewport.width}: failed resolution must not load a provider frame`);
+      await evaluate(cdp, sessionId, `document.querySelector('#player-close').click()`);
+      assert.equal(await evaluate(cdp, sessionId, `document.querySelector('#player-shell').hidden`), true);
+
+      const ratingSelector = viewport.width === 1920
+        ? `.candidate:first-child .candidate-review button:nth-child(2)`
+        : `.candidate:last-child .candidate-review button:nth-child(2)`;
+      const expectedNextTitle = viewport.width === 1920 ? 'Second Track' : 'First Track';
+      await evaluate(cdp, sessionId, `document.querySelector(${JSON.stringify(ratingSelector)}).click()`);
+      await waitFor(cdp, sessionId, `document.querySelector('#player-title').textContent === ${JSON.stringify(expectedNextTitle)}`);
+      await waitFor(cdp, sessionId, `document.querySelector('#player-status').textContent === 'Synthetic playback unavailable.'`);
+      assert.equal(
+        await evaluate(cdp, sessionId, `document.querySelector('#player-status').textContent`),
+        'Synthetic playback unavailable.',
+        `${viewport.width}: taste judgment should advance to the next unreviewed track, wrapping when needed`,
       );
     }
 
