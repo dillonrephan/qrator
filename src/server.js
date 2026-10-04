@@ -278,17 +278,15 @@ async function discover(req, res) {
       pythonSourceUrls.push(sourceUrl);
     }
     const dbPath = path.join(runDir, 'qrator.sqlite');
-    const args = ['-m', 'music_harvester.main', '--db', dbPath, mode === 'discover' ? 'discover-from-seeds' : 'create-seeds'];
+    const args = ['-m', 'music_harvester.main', '--db', dbPath, 'create-seeds'];
     if (parsed.seeds.length) args.push(parsed.seedType, ...parsed.seeds);
-    if (mode === 'discover') args.push('--search-limit', '10');
-    else {
-      for (const sourceUrl of pythonSourceUrls) args.push('--source-url', sourceUrl);
-      if (parsed.text) args.push('--text', parsed.text);
-      if (body.thorough) args.push('--thorough');
-      if (parsed.seeds.length) args.push('--search-limit', '10');
-    }
+    for (const sourceUrl of pythonSourceUrls) args.push('--source-url', sourceUrl);
+    if (parsed.text) args.push('--text', parsed.text);
+    if (body.thorough) args.push('--thorough');
     args.push('--length', String(length));
-    const completed = await runPython(args, runDir);
+    // Official seed expansion is complete; Python only distills explicit sources.
+    const completed = (pythonSourceUrls.length || parsed.text)
+      ? await runPython(args, runDir) : { stdout: '', stderr: '' };
     const outputDir = path.join(runDir, 'output');
     const [playlist, sources, unresolved, items] = await Promise.all([
       readOptional(path.join(outputDir, 'final_playlist.md')),
@@ -768,7 +766,7 @@ async function createSoundcloudDiscoveryPlaylist(req, res) {
   return json(res, 201, result);
 }
 
-export async function publishSoundcloudCandidates({ name, candidates, isPublic = false }) {
+export async function publishSoundcloudCandidates({ name, candidates, isPublic = false, requireAllResolved = false }) {
   if (!Array.isArray(candidates) || !candidates.length || candidates.length > MAX_SOUNDCLOUD_PLAYLIST_TRACKS) {
     const error = new Error(`SoundCloud publishing requires one to ${MAX_SOUNDCLOUD_PLAYLIST_TRACKS} reviewed candidates.`);
     error.status = 400;
@@ -778,11 +776,11 @@ export async function publishSoundcloudCandidates({ name, candidates, isPublic =
   const unresolved = [];
   for (const candidate of candidates) {
     const track = await resolveSoundcloudCandidate(candidate);
-    if (track) resolved.push(track);
+    if (track && (!requireAllResolved || !candidate.soundcloud_urn || track.urn === candidate.soundcloud_urn)) resolved.push(track);
     else unresolved.push({ artist: cleanText(candidate.artist, 300), title: cleanText(candidate.title, 500) });
   }
-  if (!resolved.length) {
-    const error = new Error('QRator could not strictly resolve any selected tracks on SoundCloud. Nothing was created.');
+  if (!resolved.length || (requireAllResolved && unresolved.length)) {
+    const error = new Error('QRator could not strictly resolve the required selection on SoundCloud. Nothing was created.');
     error.status = 422;
     error.unresolved = unresolved;
     throw error;
@@ -1269,7 +1267,7 @@ export function spotifyError(response, data) {
 
 export async function soundcloudFetch(url, options = {}) {
   await assertProviderReady('soundcloud');
-  const token = await getValidSoundcloudToken();
+  const token = await getValidSoundcloudToken(options.signal);
   const response = await fetch(url, {
     ...options,
     headers: { Authorization: `OAuth ${token.access_token}`, Accept: 'application/json', ...(options.headers || {}) },
@@ -1326,22 +1324,23 @@ async function saveToken(token) {
   await writeFile(tokenPath, JSON.stringify({ ...token, expires_at: Date.now() + Number(token.expires_in || 3600) * 1000 }, null, 2), { mode: 0o600 });
 }
 
-async function getValidSoundcloudToken() {
+async function getValidSoundcloudToken(signal) {
   if (!existsSync(soundcloudTokenPath)) throw new Error('SoundCloud is not connected yet. Use Connect SoundCloud first.');
   const token = JSON.parse(await readFile(soundcloudTokenPath, 'utf8'));
   if (Date.now() < token.expires_at - 60_000) return token;
   if (!token.refresh_token) throw new Error('SoundCloud authorization expired. Connect SoundCloud again.');
   const refreshed = await requestSoundcloudToken({
     grant_type: 'refresh_token', refresh_token: token.refresh_token, redirect_uri: config.soundcloudRedirectUri,
-  });
+  }, signal);
   const merged = { ...token, ...refreshed, refresh_token: refreshed.refresh_token || token.refresh_token };
   await saveSoundcloudToken(merged);
   return merged;
 }
 
-async function requestSoundcloudToken(params) {
+async function requestSoundcloudToken(params, signal) {
   if (!config.soundcloudClientId || !config.soundcloudClientSecret) throw new Error('SoundCloud client credentials are missing.');
   const response = await fetch('https://secure.soundcloud.com/oauth/token', {
+    signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ ...params, client_id: config.soundcloudClientId, client_secret: config.soundcloudClientSecret }),

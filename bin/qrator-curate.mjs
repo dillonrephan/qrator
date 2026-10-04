@@ -6,7 +6,7 @@ const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 
 async function main() {
   const input = await readBoundedStdin();
-  const result = runCurationCommand(process.argv[2], input);
+  const result = await runCurationCommand(process.argv[2], input);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

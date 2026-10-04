@@ -282,6 +282,9 @@ def cmd_discover_from_seeds(args: argparse.Namespace, store: Store) -> int:
         texts=[],
         search_limit=args.search_limit,
     )
+    if not result.sources_checked:
+        print("No shelves checked. Use node bin/qrator-curate.mjs harvest for official SoundCloud seed discovery.", file=sys.stderr)
+        return 2
     selected, rejected, candidates = generate_playlist(store, Path(args.config_dir), "bridge_discovery", args.length)
     write_outputs(store, selected, rejected, candidates, bridge=True)
     print(markdown_table(selected))

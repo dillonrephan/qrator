@@ -1,9 +1,9 @@
-import { normalizeCurationBrief, validateCurationProposal } from './agent-curation.js';
+import { normalizeCurationBrief } from './agent-curation.js';
 import { normalizeProviderSnapshot } from './agent-snapshot.js';
 
-export function runCurationCommand(command, input) {
-  if (!['brief', 'snapshot', 'validate'].includes(command)) {
-    throw new Error('Usage: qrator-curate <brief|snapshot|validate> < request.json');
+export function runCurationCommand(command, input, options = {}) {
+  if (!['brief', 'snapshot', 'harvest', 'validate', 'publish'].includes(command)) {
+    throw new Error('Usage: qrator-curate <brief|snapshot|harvest|validate|publish> < request.json');
   }
 
   let document;
@@ -15,5 +15,5 @@ export function runCurationCommand(command, input) {
 
   if (command === 'brief') return normalizeCurationBrief(document);
   if (command === 'snapshot') return normalizeProviderSnapshot(document);
-  return validateCurationProposal(document);
+  return import('./agent-workflow.js').then(workflow => workflow[command](document, options));
 }

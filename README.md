@@ -1,5 +1,11 @@
 # QRator Codex
 
+For AI-piloted harvesting, use `node bin/qrator-curate.mjs harvest`, then
+`validate` and explicitly authorized `publish`. See
+[Agent operation](docs/AGENT_CURATION_PROTOCOL.md#agent-operation) for the JSON
+contract. The Python seed-only command now fails instead of reporting success
+after checking zero shelves; it is not the SoundCloud discovery entrypoint.
+
 An independent QRator variant focused on isolated discovery runs, reviewable results, and explicit publishing.
 
 The original project at `/home/ice/projects/spotify` is not modified or used for runtime state.
@@ -166,12 +172,10 @@ python -m music_harvester.main generate --mode balanced_discovery --length 40
 python -m music_harvester.main write-spotify --playlist-name "QRator finds"
 ```
 
-For a useful no-key discovery run today:
+For bounded official SoundCloud seed discovery (connected account required):
 
 ```bash
-python -m music_harvester.main discover-from-seeds \
-  --artists Björk "MF DOOM" "Boards of Canada" "Fela Kuti" \
-  --length 20
+node bin/qrator-curate.mjs harvest < harvest-request.json
 ```
 
 To raid one explicitly chosen public ListenBrainz shelf without a key:

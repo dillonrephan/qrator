@@ -15,8 +15,8 @@ test('brief command emits the normalized non-publishing contract', () => {
   assert.equal(brief.publish.requested, false);
 });
 
-test('validate command emits accepted tracks and an inspectable receipt', () => {
-  const result = run('validate', {
+test('validate command refuses unbound hand-written candidates', async () => {
+  await assert.rejects(run('validate', {
     brief: { objective: 'Pressure with a handrail.', requested_length: 5 },
     items: [{
       candidate: {
@@ -29,10 +29,7 @@ test('validate command emits accepted tracks and an inspectable receipt', () => 
       traits: ['driven', 'melodic'],
       evidence: ['SoundCloud playlist · Human Shelf'],
     }],
-  });
-  assert.equal(result.accepted.length, 1);
-  assert.equal(result.receipt.unique_recordings, 1);
-  assert.equal(result.receipt.publish.requested, false);
+  }), /saved harvest run_id/);
 });
 
 test('snapshot command emits a resumable allowlisted candidate document', () => {
