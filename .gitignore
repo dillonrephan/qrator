@@ -8,20 +8,22 @@
 *.key
 
 # Runtime state and generated artifacts
-data/
-output/
+/data
+/output
 *.sqlite
 *.sqlite3
 *.db
 *.log
 
 # JavaScript dependencies and reports
+/node_modules
 node_modules/
-audio-semantic/.cache/
+/audio-semantic/node_modules
+/audio-semantic/.cache
 coverage/
 
 # Python environments, caches, and build output
-.venv/
+/.venv
 venv/
 __pycache__/
 *.py[cod]

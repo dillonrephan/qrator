@@ -1,4 +1,4 @@
-# QRator Codex
+# QRator
 
 For AI-piloted harvesting, use `node bin/qrator-curate.mjs harvest`, then
 `validate` and explicitly authorized `publish`. See
@@ -6,9 +6,23 @@ For AI-piloted harvesting, use `node bin/qrator-curate.mjs harvest`, then
 contract. The Python seed-only command now fails instead of reporting success
 after checking zero shelves; it is not the SoundCloud discovery entrypoint.
 
-An independent QRator variant focused on isolated discovery runs, reviewable results, and explicit publishing.
+Human-directed music discovery with isolated runs, inspectable recording
+identity/evidence, and explicit publishing. Developed through Dillon Ginsburg's
+requirements and evaluation with AI-assisted implementation and cohort review.
 
-The original project at `/home/ice/projects/spotify` is not modified or used for runtime state.
+The maintained SoundCloud-first source is canonical. The earlier Spotify
+implementation is preserved in Git history (`history/spotify`), not a second
+active runtime. Credentials, OAuth state and user data are private local lab
+state, excluded from commits; old and active state remain separate.
+
+## Qualification and limits
+
+The current syntax checks, 43 JavaScript tests and 33 Python tests pass offline.
+They do not establish current provider availability, audible playback, or
+publication privacy. A known limitation is that private Spotify playlist requests
+have returned public visibility in real API readback; do not rely on the request
+alone as privacy evidence. Publishing always requires explicit authorization
+and a readback of the actual result. No new playlist is published by migration.
 
 ## Current Direction
 

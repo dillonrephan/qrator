@@ -15,7 +15,7 @@
     "audio:semantic": "node audio-semantic/worker.mjs",
     "audio:embed": "node audio-semantic/embed.mjs",
     "check": "node --check src/server.js && node --check public/app.js && node --check src/audio-perception.js && node --check bin/qrator-audio.mjs && node --check audio-semantic/worker.mjs && node --check audio-semantic/embed.mjs",
-    "test": "node --test && python -m unittest discover -s test -p 'test_*.py'",
+    "test": "node --test && python -B -m unittest discover -s test -p 'test_*.py'",
     "test:browser": "node --test browser-regression/ui_startup.browser.js"
   },
   "engines": {
